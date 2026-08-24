@@ -22,6 +22,7 @@ from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.status import Status
 
 from akshara.agent import Agent
 from akshara.builder import BUILD_SYSTEM, BuildSpec, default_checks, run_build
@@ -163,8 +164,12 @@ class Repl:
         # bash confinement for /build children (None = the tools' default).
         self.sandbox = sandbox
         # StreamEvents are PUSHED here while each model response streams;
-        # ToolExecuted/TurnEnd still arrive as yielded events below.
-        agent.on_stream_event = self.renderer
+        # ToolExecuted/TurnEnd still arrive as yielded events below. The
+        # indirection also owns the per-turn spinner: deltas must drop it
+        # as they arrive -- see _on_stream_event.
+        agent.on_stream_event = self._on_stream_event
+        # The dead-air spinner while one is installed (run_turn).
+        self._spinner: Status | None = None
         # Images staged by /image, consumed by the NEXT turn (validated at
         # attach time so a bad path errors immediately, not mid-conversation).
         self._pending_images: list[ImageBlock] = []
@@ -220,6 +225,21 @@ class Repl:
                 return "\n".join(parts)
             line = self._input("... ").rstrip()  # keep indentation
 
+    def _on_stream_event(self, event) -> None:
+        """Push-channel entry: drop the dead-air spinner at the FIRST
+        streamed fragment, then paint.
+
+        The spinner must stop HERE, not in run_turn's pull loop -- deltas
+        never pass through that loop (they are pushed), so stopping there
+        meant a tool-free reply streamed ENTIRELY inside an active rich
+        Live region, whose repaints erase the partial lines they wrap.
+        On a real terminal that rendered as an empty reply.
+        """
+        if self._spinner is not None:
+            self._spinner.stop()
+            self._spinner = None
+        self.renderer(event)
+
     def run_turn(self, user_input: str,
                  *, images: list[ImageBlock] | None = None) -> None:
         """One user turn, fully rendered. Public because one-shot mode and
@@ -229,12 +249,9 @@ class Repl:
         stream = self.agent.run_streaming(user_input, images=images)
         spinner = self.console.status("[dim]… connecting[/dim]", spinner="dots")
         spinner.start()
-        first = False
+        self._spinner = spinner  # _on_stream_event drops it at first delta
         try:
-            for event in stream:
-                if not first:  # stop the dead-air spinner at the first event
-                    spinner.stop()
-                    first = True
+            for event in stream:  # ToolExecuted / TurnEnd only
                 self.renderer(event)
         except BaseException:
             # Deterministic cleanup on ANY abnormal exit (including
@@ -243,8 +260,11 @@ class Repl:
             stream.close()
             raise
         finally:
-            if not first:
-                spinner.stop()  # died before any event arrived
+            # Died before ANY event arrived (connection refused, instant
+            # provider error) -- nothing else ever got the chance to stop.
+            if self._spinner is not None:
+                self._spinner.stop()
+                self._spinner = None
 
     # ---- slash commands ----------------------------------------------------
 
