@@ -1,0 +1,23 @@
+{
+  "id": "resp_TEXT123",
+  "object": "response",
+  "created_at": 1756000000,
+  "status": "completed",
+  "model": "gpt-4o-mini",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_TEXT1",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        { "type": "output_text", "text": "Hello there", "annotations": [] }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 17,
+    "output_tokens": 9,
+    "total_tokens": 26
+  }
+}
