@@ -61,9 +61,10 @@ def _load_dotenv() -> None:
 
     ``uv run`` does NOT load .env for you (only ``--env-file`` does), and
     asking users to remember that flag is bad CLI manners. This loader is
-    ~15 lines instead of a python-dotenv dependency: KEY=VALUE lines,
-    '#' comments, optional quotes, split on the FIRST '=' so values may
-    contain '='. Real environment variables ALWAYS win -- .env only
+    ~25 lines instead of a python-dotenv dependency: KEY=VALUE lines,
+    full-line AND trailing '#' comments (``.env.example`` annotates every
+    variable with one), optional quotes, split on the FIRST '=' so values
+    may contain '='. Real environment variables ALWAYS win -- .env only
     fills gaps. Library callers get the same convenience via
     load_settings(); pass through if that's not what you want.
     """
@@ -80,9 +81,27 @@ def _load_dotenv() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip().strip("'\"")
-        if key and key not in os.environ:
+        key, value = key.strip(), _clean_value(value.strip())
+        # a blank VALUE is template residue (``OLLAMA_API_KEY=   `` left
+        # over from copying .env.example); importing it would shadow the
+        # code's own fallbacks with ""
+        if key and value and key not in os.environ:
             os.environ[key] = value
+
+
+def _clean_value(raw: str) -> str:
+    """One optional quote layer; then cut an unquoted `` # comment`` tail.
+
+    A '#' inside quotes stays part of the value; so does one glued to an
+    unquoted value (``abc#def``) -- only whitespace marks a comment.
+    """
+    if raw[:1] in ("'", '"'):
+        close = raw.find(raw[0], 1)
+        return raw[1:close] if close != -1 else raw[1:]
+    for i, char in enumerate(raw):
+        if char == "#" and (i == 0 or raw[i - 1].isspace()):
+            return raw[:i].rstrip()
+    return raw
 
 
 def load_settings(name: str) -> ProviderSettings:

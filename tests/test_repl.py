@@ -16,7 +16,7 @@ from conftest import ScriptedProvider, assistant_text
 from akshara.agent import Agent
 from akshara.cli.repl import Repl, confirm_gate
 from akshara.permissions import PermissionRequest, allow_read_only
-from akshara.types import ImageBlock, TextBlock
+from akshara.types import ImageBlock, StartEvent, TextBlock, TextDelta
 
 
 def make_repl(lines: list[str]) -> tuple[Repl, list[str]]:
@@ -50,6 +50,65 @@ class TestMultilineInput:
         repl, _ = make_repl(["ends with backslash \\ ", "second"])
         # trailing spaces stripped by .strip(); exactly ONE backslash eaten
         assert repl._read_line() == "ends with backslash \nsecond"
+
+
+class TestSpinnerLifecycle:
+    """The dead-air spinner must die at the FIRST STREAMED event.
+
+    Deltas reach the renderer through the PUSH channel
+    (agent.on_stream_event), never through run_turn's pull loop -- which,
+    for a tool-free reply, sees nothing until TurnEnd. Stopping there left
+    the whole reply streaming inside an active rich Live region, whose
+    repaints erase the partial lines they wrap; on a real terminal that
+    rendered as an EMPTY reply. These tests pin the stop to the push
+    channel with a recording stub, since a non-TTY Console disables Live
+    and would hide the bug entirely.
+    """
+
+    def make_spinner_repl(self, script: list) -> tuple[Repl, list[str]]:
+        log: list[str] = []
+
+        class StubStatus:
+            def start(self):
+                log.append("start")
+
+            def stop(self):
+                log.append("stop")
+
+        class StubConsole(Console):
+            def status(self, *args, **kwargs):
+                return StubStatus()
+
+        agent = Agent(ScriptedProvider(script), model="m",
+                      permissions=allow_read_only)
+        repl = Repl(agent, StubConsole(file=io.StringIO(), width=100),
+                    input_fn=lambda prompt: "")
+
+        inner = repl.renderer
+
+        def spy(event):
+            if isinstance(event, (StartEvent, TextDelta)):
+                log.append(f"render:{type(event).__name__}")
+            inner(event)
+
+        repl.renderer = spy  # observe ordering without changing what paints
+        return repl, log
+
+    def test_stops_at_first_stream_event(self):
+        repl, log = self.make_spinner_repl([assistant_text("hi")])
+        repl.run_turn("hello")
+        assert log[0] == "start"
+        assert log.count("stop") == 1
+        # the stop precedes even StartEvent -- nothing paints under Live
+        assert log[:3] == ["start", "stop", "render:StartEvent"]
+
+    def test_stops_even_when_nothing_streams(self):
+        # provider dies before its first event -- finally() is the last line
+        # of defense, or the spinner outlives the turn that started it
+        repl, log = self.make_spinner_repl([])
+        with pytest.raises(AssertionError):
+            repl.run_turn("hello")
+        assert log == ["start", "stop"]
 
 
 class TestImageCommand:
