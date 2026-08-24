@@ -1,0 +1,408 @@
+# AksharaHarness — a from-scratch LLM agent harness
+
+A learning project: build the machinery behind tools like Claude Code —
+an agentic loop around a chat model, a JSON-Schema tool system, a
+permission gate, hand-parsed streaming — **without SDKs, pydantic, or
+frameworks**. Runtime deps: `httpx` and `rich` only.
+
+The code is the tutorial; [`notes/`](notes/) is the per-topic
+write-up. New to agents entirely?
+Two ways in: [TUTORIAL.md](TUTORIAL.md) — type a ~200-line working
+agent into existence, step by step, no background assumed ([TUTORIAL.html](TUTORIAL.html)
+is the same thing as a styled page you can open or send to anyone) — or
+[notes/00-guided-tour.md](notes/00-guided-tour.md), a plain-English
+tour of how this one works, with diagrams.
+
+## Setup
+
+```bash
+uv sync                          # creates .venv from pyproject.toml
+cp .env.example .env             # then fill in a key (never committed)
+```
+
+`.env` is loaded automatically (a ~15-line loader in `config.py` — no
+python-dotenv dependency); real environment variables still win.
+
+`.env` variables per provider (`PREFIX` = `ANTHROPIC`, `OPENAI`,
+`RESPONSES`, or `OLLAMA`):
+
+| Var | Meaning |
+|---|---|
+| `{PREFIX}_API_KEY` | secret (Anthropic also accepts `ANTHROPIC_AUTH_TOKEN`; Ollama needs none) |
+| `{PREFIX}_BASE_URL` | Anthropic: excludes `/v1` · OpenAI-style (incl. ollama + responses): INCLUDES `/v1` |
+| `{PREFIX}_MODEL` | default model slug |
+| `{PREFIX}_CONTEXT_WINDOW` | window assumption for compaction (default 200000 cloud / 8192 ollama) |
+
+Any OpenAI-compatible gateway works as `OPENAI_BASE_URL`; gateways that
+also speak the Messages dialect work under `ANTHROPIC_BASE_URL`; the
+Responses dialect (`RESPONSES_*`) targets OpenAI directly, OpenRouter's
+stateless beta, or a local Ollama >= 0.13.3 — all on the same `/v1`
+surface ([notes/19](notes/19-responses-api.md)).
+
+## Usage
+
+```bash
+uv run akshara                                        # REPL (provider auto-guessed from keys)
+uv run akshara --provider openai                      # pick a dialect explicitly
+uv run akshara --provider ollama                      # LOCAL models (localhost:11434, no key)
+uv run akshara --provider ollama --model qwen3.8      # any tag you have pulled
+uv run akshara --yolo                                 # no permission prompts (careful)
+uv run akshara --cache                                # prompt-cache breakpoints on
+uv run akshara --resume                               # restore the newest checkpoint
+uv run akshara "summarize README.md"                  # one-shot prompt, then exit
+uv run akshara --image photo.png "what's in this picture?"   # vision one-shot
+```
+
+Builder mode ([notes/18](notes/18-builder-mode.md)): spec → files →
+acceptance checks re-run INDEPENDENTLY (never trusting the model's
+word); a red verification is fed back into the same conversation for a
+bounded repair round (default 2), then BUILD GREEN/RED. Exit code
+doubles as a CI gate. Test files are checksummed — a repair job that
+edits them fails the build even if the suite then passes, and tampering
+is never repaired:
+
+```bash
+uv run akshara --build "CLI that converts between temperature units"   # BUILD GREEN → exit 0
+uv run akshara --build --cwd somewhere/seeded "repair the broken CLI"
+```
+
+Bash sandboxing ([notes/16](notes/16-sandboxing.md)) — `--sandbox`
+picks bubblewrap when usable (network off by default, host filesystem
+invisible outside read-only system paths, env scrubbed of secrets,
+timed-out process trees fully reaped) and falls back to the legacy
+scrubbed-env subprocess otherwise:
+
+```bash
+uv run akshara --sandbox                    # autodetect (bwrap > subprocess)
+uv run akshara --sandbox none               # explicit legacy behavior
+```
+
+Dynamic tool loading ([notes/17](notes/17-tool-selection.md)) — past
+~20 tools the model's selection accuracy hits the cliff, so per turn
+only the top-K relevant tools are SENT and EXECUTABLE (BM25 over name +
+description), with a pinned `list_available_tools` discovery hatch:
+
+```bash
+uv run akshara --mcp-config big.json --tool-select 7    # force width K
+uv run akshara --tool-select 0                          # opt out of auto-enable
+```
+
+MCP servers (hand-rolled JSON-RPC — no SDK; stdio and Streamable-HTTP
+transports, picked by config shape). Config file, repeatable flag; tools
+register as `mcp__<server>__<tool>`:
+
+```json
+{"servers": {"tiny":  {"command": "python",
+                       "args": ["examples/tiny_mcp_server.py"]},
+             "remote": {"url": "http://127.0.0.1:8000/mcp"}}}
+```
+
+```bash
+uv run akshara --mcp-config mcp.json          # connect + discover at startup
+python examples/tiny_mcp_server.py --http     # the same server over Streamable HTTP
+```
+
+Sub-agents (agent-as-tool: fresh-context children with a filtered tool
+catalog, per-session spawn budget, compact results — child streams tee
+to the terminal live):
+
+```bash
+uv run akshara --subagents "research X and report back"
+```
+
+Evals (trajectory-level, real model, costs money — merge/nightly
+cadence, not per-commit; exit code doubles as a CI gate):
+
+```bash
+uv run --env-file .env python examples/run_evals.py   # 7 golden trajectories
+uv run --env-file .env python examples/run_evals.py --async   # same, concurrent
+```
+
+Images ([notes/15](notes/15-images.md)): `--image PATH` (repeatable)
+attaches png/jpeg/gif/webp files (≤5 MB each) to a one-shot prompt;
+in the REPL, `/image PATH...` stages them onto your *next* message
+(`/image` alone shows the stage, `/image clear` unstages). The loader
+base64-encodes before any turn starts — a bad path errors at attach
+time, never mid-conversation; both adapters carry the resulting
+`ImageBlock` in their own dialect, and compaction bills images by
+decoded size.
+
+REPL commands: `/help /model /provider /tools /history /usage /save /load
+/compact /clear /image /build /quit` (`//text` sends a literal leading slash; a
+trailing `\` continues the same message on the next line — paste-friendly
+multi-line input that keeps indentation). Ctrl-C
+cancels the current turn, not the session. `/build TASK` runs a child
+builder agent in its own workspace and reports BUILD GREEN/RED without
+touching this session's history. `/save`+`--resume` persist
+sessions to `.akshara/session.sqlite3` (append-only versions);
+`/compact` force-clears context pressure — auto-compaction also fires by
+itself at 80% of the window (`--context-window` to set it).
+
+Cost accounting ([notes/21](notes/21-cost-accounting.md)): the turn
+footer and `/usage` show approximate dollars from a built-in list-price
+table (current Claude + GPT slugs, snapshot-dated), summed over
+per-model buckets so mid-session model switches price correctly. An
+unknown slug shows NO figure — never `$0`. Prices drift; point
+`AKSHARA_PRICES` at a JSON file to override or extend:
+
+```json
+{"my-model": {"input": 3.0, "output": 15.0},
+ "vendor/slug*": {"input": 1.0, "output": 2.0, "cached_read": 0.1}}
+```
+
+The billing convention underneath: usage counters are disjoint
+(`input_tokens` counts full-rate tokens only — OpenAI-dialect adapters
+subtract cached hits out of the wire's prompt total), so cached tokens
+are never billed twice, and `Usage.window_tokens()` is what fills the
+context window.
+
+Library use:
+
+```python
+from akshara import Agent, allow_read_only, default_registry, get_provider, load_settings
+
+agent = Agent(get_provider("anthropic", load_settings("anthropic")),
+              model="claude-sonnet-4-5", tools=default_registry(),
+              permissions=allow_read_only)          # read-only tools run free
+
+# opt in to sub-agents: two objects, wired to each other
+from akshara.subagent import SpawnSubagent, SubagentSpawner
+spawner = SubagentSpawner(agent)                    # per-session budget lives here
+agent.registry.register(SpawnSubagent(spawner))     # the model now sees the tool
+
+print(agent.run("what's in README.md?").message.text())
+
+# async: one event loop, many independent conversations
+import asyncio
+from akshara.async_agent import AsyncAgent
+
+async def main():
+    provider = get_provider("anthropic", load_settings("anthropic"))
+    agents = [AsyncAgent(provider, model="claude-sonnet-4-5")
+              for _ in range(4)]
+    replies = await asyncio.gather(*(a.run(q) for a, q in zip(agents, QUESTIONS)))
+
+asyncio.run(main())
+```
+
+Demos: [`examples/one_shot.py`](examples/one_shot.py) (request JSON → raw
+response JSON → normalized response), [`examples/stream_demo.py`](examples/stream_demo.py)
+(raw SSE events), [`examples/tool_round_trip.py`](examples/tool_round_trip.py)
+(a full agent turn), [`examples/agent_loop_demo.py`](examples/agent_loop_demo.py)
+(the loop itself, event by event — press Ctrl-C mid-turn to watch the
+resumable-history invariant recover),
+[`examples/tiny_mcp_server.py`](examples/tiny_mcp_server.py) (a minimal
+MCP server in pure stdlib — both sides of both transports),
+[`examples/async_demo.py`](examples/async_demo.py) (N conversations
+sequential vs one-event-loop concurrent, with the speedup measured live),
+[`examples/builder_demo.py`](examples/builder_demo.py) (the real-world
+test: the agent builds a project from a spec — or repairs a seeded
+broken one without touching its checksummed tests — and the demo
+independently re-verifies; exit code doubles as a CI gate),
+[`examples/cache_demo.py`](examples/cache_demo.py) (prompt-cache hit,
+measured live), [`examples/hooks_demo.py`](examples/hooks_demo.py)
+(watch every tool execution without touching the loop).
+
+## Architecture
+
+Normalization happens in exactly ONE layer: the provider adapters.
+Internal types are the only representation the rest of the program sees.
+
+```
+src/akshara/
+├── types.py        shared vocabulary: Message/Block/ToolCall/ToolResult, StreamEvent union
+├── errors.py       ProviderError family (terminal) vs ToolError family (become data)
+├── config.py       env vars -> ProviderSettings (+ .env auto-load)
+├── agent.py        THE LOOP: model -> tool calls -> results -> repeat; optional
+│                   per-turn tool selection (send AND execute only the top-K)
+├── async_agent.py  the loop's async twin: same rules, awaited -- one event
+│                   loop drives K independent conversations ([notes/11](notes/11-async.md));
+│                   batch width capped by max_parallel_tools (semaphore inside
+│                   the workers -- gather starts all, runs N-wide)
+├── builder.py      first-class build mode: BuildSpec -> seeded workspace ->
+│                   agent turns -> INDEPENDENT re-verification + test-file
+│                   checksums -> BuildResult.ok as a CI gate ([notes/18](notes/18-builder-mode.md))
+├── sandbox.py      ToolSandbox protocol + two backends: SubprocessSandbox
+│                   (scrubbed env, legacy semantics) and BwrapSandbox (bubblewrap:
+│                   no net/fs/pid escape) + autodetect ([notes/16](notes/16-sandboxing.md))
+├── subagent.py     agent-as-tool: fresh child Agent per spawn -- budget,
+│                   one level deep, compact results, optional stream tee
+│                   ([notes/08](notes/08-sub-agents.md))
+├── permissions.py  PermissionRequest + gates: allow_read_only / yolo /
+│                   deny_all / trust_sandbox (auto-approves bash ONLY while
+│                   confined); approve-with-edits: a gate may rewrite arguments
+│                   pre-approval ([notes/20](notes/20-approve-with-edits.md))
+├── context.py      compaction: mask old tool results, then summarize (red
+│                   zone) -- sync + async twins share all the arithmetic
+├── leases.py       TTL leases for shared resources -- parallel batch writes
+│                   to one path serialize instead of racing
+├── session.py      SQLite checkpoints: append-only versions, /save /load --resume
+├── mcp.py          MCP client, hand-rolled JSON-RPC over stdio AND
+│                   Streamable HTTP (SSE responses via providers/sse.py):
+│                   handshake, tools/list, tools/call ([notes/09](notes/09-mcp.md))
+├── evals.py        trajectory evals: completion/correctness/process/cost,
+│                   recording tool proxy, LLM judge; AsyncEvalRunner twin
+│                   runs cases concurrently, shared scoring ([notes/10](notes/10-evals.md))
+├── pricing.py      list-price table -> $ figures: slug matching (exact /
+│                   date-suffix / vendor-prefix / family), per-model session
+│                   buckets, AKSHARA_PRICES overrides; unknown = no figure,
+│                   never a guess ([notes/21](notes/21-cost-accounting.md))
+├── providers/
+│   ├── base.py     Provider ABC + collect()/acollect(): stream events ->
+│   │               ModelResponse (protocol cores shared by both skins);
+│   │               cache_control opt-in lives here ([notes/13](notes/13-caching.md))
+│   ├── retry.py    retry: backoff+jitter, budgets, Retry-After -- two notches:
+│   │               the OPENING freely retried, a 200 stream that dies BEFORE
+│   │               its first event re-opened under the same budgets; after
+│   │               ANY event forwarded, never (sync + async twins)
+│   ├── fallback.py opening-only failover across providers (retry fixes
+│                   time problems, fallback fixes place problems)
+│   ├── sse.py      hand-rolled SSE framing (incremental UTF-8, CRLF/CR/LF, comments)
+│   ├── anthropic.py  Messages-dialect adapter (encode request / decode stream)
+│   ├── openai.py     chat-completions-dialect adapter behind the same interface
+│   ├── responses.py  Responses-API dialect (chat-completions' successor):
+│   │                 typed input items, flat tools, NAMED SSE events ending
+│   │                 [DONE] ([notes/19](notes/19-responses-api.md))
+│   └── ollama.py     local models = OpenAI dialect profile (no auth, 8k window)
+├── tools/
+│   ├── base.py     Tool ABC (schema + summary + run), ToolRegistry, arg validators
+│   ├── fs.py       read_file / list_dir / write_file / edit_file (+ path sandbox)
+│   ├── shell.py    bash — delegates to any ToolSandbox (default: legacy
+│   │               subprocess semantics; timeout -> killpg -> salvage)
+│   ├── selector.py dynamic tool loading: BM25 ToolCatalog over name+
+│   │               description, transcript-derived query, pinned
+│   │               list_available_tools discovery hatch ([notes/17](notes/17-tool-selection.md))
+│   ├── search.py   grep — ripgrep subprocess when available, pure-python
+│   │               walker fallback (identical output contract)
+│   └── memory.py   scratchpad: write_note / recall_notes — JSON store under
+│                   .akshara/, ranked substring retrieval, survives restarts
+└── cli/            main.py (argparse) · repl.py (input loop) · render.py (rich)
+```
+
+Design rules worth stealing:
+
+* **Errors are data.** A crashing/denied/nonexistent tool becomes an
+  `is_error` tool result the model reads and recovers from; the loop
+  cannot be crashed by a tool. Provider errors (auth/rate-limit/overflow)
+  are the opposite: exceptions, terminal for the turn.
+* **The history invariant:** every tool_call id gets a matching result
+  before the next request — enforced on every exit path including
+  iteration caps and mid-turn Ctrl-C ([notes/05](notes/05-agent-loop.md)).
+* **Permission gate = plain callable** `Callable[[PermissionRequest], bool]`.
+  Tools build their own human-readable `summary()` with the same context
+  execution will get, so what you approve is what runs. Approve-with-edits
+  falls out of one deliberate mutability: a gate may REPLACE
+  `request.arguments` before answering True; the loop notices the swap by
+  identity and adopts the edited form — so approval is a review step, not
+  a rubber stamp ([notes/20](notes/20-approve-with-edits.md)).
+* **Gates decide, hooks watch.** Observational `on_before_tool` /
+  `on_after_tool` callbacks bracket every real execution (errors
+  included) but can veto nothing — denial stays the gate's job. A
+  raising hook crashes the turn loudly: hooks are developer
+  infrastructure, not untrusted input ([notes/14](notes/14-hooks.md)).
+* **Two channels out of a turn.** Raw StreamEvents (text/thinking
+  deltas) are *pushed* to `agent.on_stream_event` while each response
+  streams (collect() owns the pull, so they can't be yielded);
+  ToolExecuted/TurnEnd are *yielded* from `run_streaming()`. Consumers
+  pull, UIs subscribe ([notes/05](notes/05-agent-loop.md)).
+* **Retry the opening, never the stream.** 429/5xx/connection errors
+  back off with jitter up to hard budgets; once one event reached the
+  caller there is no safe replay ([notes/07](notes/07-reliability-and-scale.md)).
+* **Gates sequential, execution parallel.** y/n prompts own the
+  terminal; approved batches run in a thread pool (or as asyncio tasks)
+  but results yield in submission order. Ctrl-C mid-batch records REAL
+  results — workers finish during the join, and the work happened
+  (async needs `asyncio.shield` for this: a bare `await gather`
+  forwards cancellation INTO its children and loses finished work,
+  [notes/11](notes/11-async.md)).
+* **Mask before summarize.** Compaction first elides old tool-result
+  OUTPUT (reversible, calls stay verbatim); only if still in the red
+  zone does an LLM summarize the middle — goal message intact, every
+  tool call accounted for ([notes/07](notes/07-reliability-and-scale.md)).
+* **Sub-agents: constrained in code, not prompts.** One level deep
+  (`spawn_subagent` rejected from child catalogs), bounded (per-session
+  budget + mandatory justification), compact results (conclusions +
+  cost metadata, never transcripts). Scope restriction lives at the
+  ToolRegistry level; permissions are inherited so a sub-agent cannot
+  escalate by being a sub-agent ([notes/08](notes/08-sub-agents.md)).
+* **Sync generators everywhere** — blocking tools, blocking REPL, and
+  cancellation for free (generator close unwinds into socket cleanup).
+* **Async = cores + skins, not a rewrite.** Protocol logic lives in
+  incremental sync classes (SSE framing, stream routers, response
+  folding, compaction arithmetic); `acollect`/`astream`/`AsyncAgent`
+  are thin awaited skins over the same rules — zero duplicated wire
+  logic. Tools keep ONE blocking implementation; the async loop pushes
+  them to threads via a default `arun()` (`to_thread`) instead of
+  pretending syscalls are non-blocking. One event loop drives K
+  independent conversations ([notes/11](notes/11-async.md)).
+
+## The wire cheat-sheet
+
+The whole reason three adapters exist. Same conversation, three encodings:
+
+| Concern | Anthropic Messages | OpenAI chat-completions | OpenAI Responses |
+|---|---|---|---|
+| Auth | `x-api-key` + `anthropic-version: 2023-06-01` | `Authorization: Bearer` | `Authorization: Bearer` |
+| Endpoint | `POST {base}/v1/messages` | `POST {base}/chat/completions` | `POST {base}/responses` |
+| System prompt | top-level `"system"` field | `messages[0] role:"system"` | top-level `"instructions"` field |
+| max_tokens | **required** | optional | `max_output_tokens` (optional) |
+| History shape | block-shaped messages | role messages; user turns fan out into `role:"tool"` messages | ONE flat `input[]` of TYPED items (`message`, `function_call`, `function_call_output`) |
+| Tool definition | `{name, description, input_schema}` | `{type:"function", function:{name, description, parameters}}` | FLAT: `{type:"function", name, description, parameters}` |
+| Tool calls in reply | content blocks `type:"tool_use"` (input = object) | `message.tool_calls[]` (arguments = JSON **string**) | `output[]` items `type:"function_call"`, keyed by `call_id` (arguments = JSON **string**) |
+| Sending results back | next `role:"user"` msg w/ `tool_result` blocks | one `role:"tool"` message per call | one `type:"function_call_output"` item per result (echoes `call_id`) |
+| Stop signal | `stop_reason: end_turn\|tool_use\|max_tokens...` | `finish_reason: stop\|length\|tool_calls\|content_filter` | `status: completed\|incomplete` (+ any `function_call` item ⇒ tool_use; `incomplete_details.reason: max_output_tokens`) |
+| Model reasoning | content blocks `type:"thinking"` + opaque `signature` — MUST round-trip verbatim in tool loops; `type:"redacted_thinking"` (ciphertext) has the same contract and arrives whole in streams | `reasoning` / `reasoning_content` fields — display-only | `reasoning` output items / summary deltas — display-only |
+| Stream shape | named events (`message_start`, `content_block_start/delta/stop`, `message_delta`, `message_stop`, `ping`) | anonymous chunks ending `data: [DONE]`; empty-choices chunks carry usage | named events (`response.created`, `response.output_text.delta`, `response.function_call_arguments.delta`, terminal `response.completed` carrying usage) ending `data: [DONE]` |
+
+Streaming details both formats share: arguments arrive as **fragments**
+that must accumulate keyed by stream index and parse exactly once at the
+end ([notes/03](notes/03-sse-and-collect.md)).
+
+## Run & test
+
+```bash
+uv run pytest -q                 # full offline suite: 437 tests, NO network, NO key
+
+# everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
+uv run python examples/one_shot.py "Why is the sky blue?"
+uv run python examples/one_shot.py --provider openai "Why is the sky blue?"
+uv run python examples/stream_demo.py "Count to five"
+uv run python examples/tool_round_trip.py "What's in README.md?"
+uv run python examples/agent_loop_demo.py            # the loop, event by event
+uv run python examples/agent_loop_demo.py --deny-all # denial-as-data demo
+uv run python examples/async_demo.py                 # 4 conversations, seq vs concurrent
+uv run python examples/builder_demo.py               # agent BUILDS a project, verified
+uv run akshara                                       # REPL
+uv run akshara --yolo "run: echo hi"                 # one-shot, no prompts
+uv run akshara --cache                               # prompt caching on
+uv run python examples/cache_demo.py                 # cache hit, measured live
+uv run python examples/hooks_demo.py                 # watch tool executions live
+```
+
+The offline suite never touches the network: adapters run against
+byte-exact SSE/JSON fixtures via `httpx.MockTransport`; the loop runs
+against `ScriptedProvider`. The integration suite
+(`tests/test_integration.py`) drives real adapters through a full
+two-iteration tool turn per provider and asserts each wire's
+result-encoding shape on the second request.
+
+
+## Tested
+
+`uv run pytest -q` — 438 offline tests against byte-exact SSE/JSON
+fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
+network, no key. Retries are exercised offline too, against flaky
+mock transports whose policy path is identical to the live one.
+
+Everything above has also been exercised against real providers —
+all three dialects via OpenRouter (cloud models) plus local Ollama
+for end-to-end runs of sandboxing, build mode, MCP, sub-agents,
+evals, caching, hooks, and vision. The `examples/` demos rerun most
+of it on demand. Live testing shook out four real bugs along the way,
+all fixed and now regression-tested: gateway `null` token counters
+poisoning `Usage.add()`, an orphaned child process when Ctrl-C lands
+mid-bash, thinking blocks that must round-trip verbatim through tool
+loops (including unsigned ones behind a gateway that still validates
+the field), and an inverted yolo-warning guard in the banner
+([notes/02](notes/02-wire-formats.md), [notes/04](notes/04-tools.md),
+[notes/06](notes/06-cli.md)).

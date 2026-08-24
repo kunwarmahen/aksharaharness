@@ -1,0 +1,3 @@
+{
+  "deploy-checklist": "run uv run pytest before every deploy"
+}
