@@ -115,6 +115,7 @@ class Agent:
         auto_compact: bool = True,
         tool_catalog: ToolCatalog | None = None,
         tools_per_turn: int = 7,
+        interrupt_check: Callable[[], bool] | None = None,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -164,6 +165,18 @@ class Agent:
         # signal (the chars/4 heuristic in context.py is only a proxy).
         self.last_context_tokens: int = 0
         self.last_compaction: dict | None = None
+        # Cooperative cancellation for hosts where the loop runs on a worker
+        # thread that no signal can reach (the web UI's cancel button). When
+        # set, it is polled between stream events -- so a Stop click lands
+        # MID-MODEL-CALL, within one SSE event, not just at the checkpoints
+        # a terminal Ctrl-C already owns. Raising KeyboardInterrupt keeps the
+        # resumable-history cleanup identical to every other exit path.
+        self.interrupt_check = interrupt_check
+
+    def _interrupted(self) -> bool:
+        """Poll the host's cancel flag, if one is wired."""
+        check = self.interrupt_check
+        return bool(check and check())
 
     # ---- public entry points ----------------------------------------------
 
@@ -271,7 +284,10 @@ class Agent:
     def _specs_for_request(self) -> list:
         if self._turn_tools is None:
             return self.registry.specs()
-        return [t.spec() for t in self._turn_tools]
+        # A tool selected earlier this turn can be disabled mid-turn; it
+        # must not ride the NEXT request of the same turn.
+        return [t.spec() for t in self._turn_tools
+                if not self.registry.is_disabled(t.name)]
 
     def _get_visible_tool(self, name: str):
         """registry.get under selection -- with SOFT ADMISSION.
@@ -285,7 +301,13 @@ class Agent:
         gating unchanged, and its name in history means BM25 keeps it
         selected from here on (convergence without the punishment lap).
         Only a genuinely unknown name still errors, as data.
+
+        Operator-disabled tools are refused HERE -- the single choke
+        point every path flows through (selected or soft-admitted) -- so
+        a mid-turn disable takes effect on the very next call.
         """
+        if self.registry.is_disabled(name):
+            raise KeyError(f"tool {name!r} is disabled by the operator")
         if self._turn_tools is not None:
             for tool in self._turn_tools:
                 if tool.name == name:
@@ -315,8 +337,15 @@ class Agent:
     def utilization(self) -> float | None:
         """Fraction of the usable window consumed by the next request.
         Prefers the provider's own last reported footprint; falls back to
-        the chars/4 heuristic before any response has arrived."""
-        usable = max(self.context_window - self.max_tokens, 1)
+        the chars/4 heuristic before any response has arrived.
+
+        The reply budget is capped at HALF the window when computing
+        headroom: a small local model (8k window) configured with the
+        cloud-default 16k reply budget would otherwise make
+        ``window - max_tokens`` hit zero and peg this reading at 100%
+        forever -- the "pressure is always full" display bug."""
+        headroom = min(self.max_tokens, self.context_window // 2)
+        usable = max(self.context_window - headroom, 1)
         used = self.last_context_tokens or estimate_history(self.history)
         if not self.history:
             return None
@@ -355,8 +384,15 @@ class Agent:
         renderer sees text/thinking deltas as they arrive is this callback
         -- yielding them from run_streaming would interleave badly with
         ToolExecuted (they'd all arrive AFTER the whole response was folded).
+
+        This is also the interrupt checkpoint INSIDE a model call: polled
+        per event, a host cancel flag aborts the drain mid-stream. Nothing
+        has been appended to history yet at that point, so unwinding here
+        is trivially resumable (see run_streaming's BaseException handler).
         """
         for event in events:
+            if self._interrupted():
+                raise KeyboardInterrupt
             self.on_stream_event(event)
             yield event
 
@@ -383,6 +419,8 @@ class Agent:
 
         if len(pending) <= 1:  # fast path: nothing to parallelize
             for i, call in pending:
+                if self._interrupted():  # stop BEFORE the next call starts
+                    raise KeyboardInterrupt
                 results[i] = self._run_one(call)
             return results  # type: ignore[return-value]
 
@@ -393,6 +431,11 @@ class Agent:
             cancelled: BaseException | None = None
             try:
                 for i, fut in futures:  # submission order == calls order
+                    if self._interrupted():
+                        # Cancel while a batch is in flight: the except
+                        # below still records every finished worker's REAL
+                        # result before propagating.
+                        raise KeyboardInterrupt
                     results[i] = fut.result()
             except BaseException as exc:
                 cancelled = exc

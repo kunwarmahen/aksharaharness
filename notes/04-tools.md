@@ -178,3 +178,29 @@ with `channel=None` (piped stdin, cron, evals) a call raises
 convert-failures-to-data rule cannot hand the model a "no user found"
 note it would try to explain away with a guess. Nobody home is not the
 model's problem to fix.
+
+## Two ways to take a tool away: unregister vs disable
+
+The registry grew a second removal spelling after the first one met the
+UI ([22-web-ui.md](22-web-ui.md)). They answer different questions:
+
+* **`unregister(name)`** — gone for good; the operator's startup
+  kill-switch (`AKSHARA_DISABLED_TOOLS`,
+  [17-tool-selection.md](17-tool-selection.md)) uses it before any
+  catalog is built.
+* **`disable(name)` / `enable(name)`** — reversible and mid-session:
+  the tool stays registered but hidden behind a live-checked set.
+  `specs()` drops it from the next request, `get()` refuses with a
+  DISTINCT message ("disabled by the operator", not "no such tool" —
+  the model should be able to tell an operator decision from its own
+  hallucination), `disabled_names()` reports it sorted, and
+  re-registering or unregistering clears the flag.
+
+The design rule that made this safe to expose mid-turn: **every check
+is consulted LIVE, never baked in**. Nothing snapshots the disabled set
+at wire-up time; selection, discovery, and execution all ask
+`is_disabled()` per call, so flipping a switch takes effect on the very
+next request — including one already in flight. The failure mode is
+deliberately data, not an exception: a model calling a just-disabled
+tool gets the refusal as a tool result and picks another route, exactly
+like a denied permission.

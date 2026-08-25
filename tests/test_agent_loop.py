@@ -510,3 +510,137 @@ def test_stream_events_push_to_subscriber_during_collect():
         "ToolCallStart", "ToolCallDelta", "EndEvent",
         "StartEvent", "TextDelta", "TextDelta", "EndEvent",
     ]
+
+
+# ---- cooperative interruption (the web Stop button's teeth) ------------------
+
+
+def test_interrupt_check_trips_between_stream_events():
+    """The web UI's cancel flag is polled INSIDE the model drain: raising
+    KeyboardInterrupt there aborts mid-generation, and since nothing has
+    been appended to history yet, resumability is trivial."""
+    agent = make_agent([assistant_text("abcdef")])
+    polls = {"n": 0}
+
+    def pressed_after_first_event() -> bool:
+        polls["n"] += 1
+        return polls["n"] > 1  # trip on the SECOND stream event
+
+    agent.interrupt_check = pressed_after_first_event
+
+    with pytest.raises(KeyboardInterrupt):
+        list(agent.run_streaming("go"))
+
+    assert [m.role for m in agent.history] == ["user"]
+    assert_history_resumable(agent)
+
+
+def test_interrupt_check_already_set_never_starts():
+    """A cancel pressed before the turn even begins aborts immediately --
+    the first poll happens before the first event is forwarded."""
+    agent = make_agent([assistant_text("never reached")])
+    agent.interrupt_check = lambda: True
+
+    with pytest.raises(KeyboardInterrupt):
+        list(agent.run_streaming("go"))
+
+    assert [m.role for m in agent.history] == ["user"]
+
+
+def test_interrupt_check_stops_not_yet_started_tools():
+    """Cancel landing AFTER a model response but BEFORE its tool runs:
+    the un-executed call gets a synthesized error -- same contract as
+    every other abnormal exit. The flag flips on EndEvent, so the whole
+    model stream drains cleanly and the trip lands exactly between."""
+    agent = make_agent([
+        assistant_tool_call("c1", "echo", {"text": "hi"}),
+        assistant_text("never reached"),
+    ])
+    seen_end = {"yes": False}
+
+    def spy(event) -> None:
+        if isinstance(event, EndEvent):
+            seen_end["yes"] = True
+
+    agent.on_stream_event = spy
+    agent.interrupt_check = lambda: seen_end["yes"]
+
+    with pytest.raises(KeyboardInterrupt):
+        list(agent.run_streaming("go"))
+
+    assert seen_end["yes"]  # streamed fully -- the trip was BETWEEN stages
+    results = {r.tool_call_id: r for r in last_user_results(agent)}
+    assert results["c1"].is_error          # synthesized, never executed
+    assert_history_resumable(agent)
+
+
+# ---- runtime-disabled tools ---------------------------------------------------
+
+
+def test_disabled_tool_fails_as_data_without_executing():
+    """/tools off (or the web toggle) pulls a tool MID-SESSION: its next
+    call fails as readable data -- distinct from 'no such tool' -- and a
+    re-enabled tool runs again without a restart."""
+    agent = make_agent([
+        # turn 1: echo pulled -> the call fails as data, turn recovers
+        assistant_tool_call("c1", "echo", {"text": "hi"}),
+        assistant_text("noted, working around it"),
+        # turn 2: echo restored -> same call shape now executes
+        assistant_tool_call("c2", "echo", {"text": "again"}),
+        assistant_text("done"),
+    ])
+
+    agent.registry.disable("echo")
+    events, _ = drain(agent)
+    first = [e for e in events if isinstance(e, ToolExecuted)][0]
+    assert first.result.is_error
+    assert "disabled by the operator" in first.result.content
+    assert_history_resumable(agent)
+
+    agent.registry.enable("echo")
+    events, _ = drain(agent)
+    second = [e for e in events if isinstance(e, ToolExecuted)][0]
+    assert not second.result.is_error
+    assert second.result.content == "echo:again"
+
+
+def test_disabled_tool_is_never_sent():
+    """specs() omits disabled tools -- the model cannot call what it was
+    never shown."""
+    agent = make_agent([])
+    agent.registry.disable("bomb")
+    assert {s.name for s in agent.registry.specs()} == {"echo", "bad_summary"}
+    # ...but it stays registered: history/checkpoints keep referencing it.
+    assert "bomb" in agent.registry.names()
+
+
+# ---- context pressure ---------------------------------------------------------
+
+
+def test_utilization_survives_reply_budget_over_window():
+    """Regression for the always-100% pressure reading: an 8k local window
+    with the cloud-default 16k reply budget made usable floor out to 1
+    token, pegging utilization at 1.0 whenever history was non-empty."""
+    agent = make_agent(
+        [assistant_text("done", usage=Usage(input_tokens=1000,
+                                            output_tokens=10))],
+    )
+    agent.context_window = 8192
+    agent.max_tokens = 16384
+    drain(agent)
+
+    ratio = agent.utilization()
+    assert 0.0 < ratio < 1.0  # neither zero nor pegged
+
+
+def test_utilization_unchanged_when_headroom_fits():
+    """The clamp only bites when max_tokens exceeds half the window; the
+    cloud default (16384 headroom of 200k) keeps its exact arithmetic."""
+    agent = make_agent(
+        [assistant_text("done", usage=Usage(input_tokens=18361, output_tokens=5))],
+    )
+    agent.context_window = 200_000
+    agent.max_tokens = 16_384
+    drain(agent)
+
+    assert agent.utilization() == pytest.approx(18_361 / 183_616)

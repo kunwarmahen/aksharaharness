@@ -855,6 +855,15 @@ depends on the last — impossible for a chatbot, routine for anything
 with hands, memory and a loop. Approve the writes, deny one on purpose,
 watch it adapt.
 
+Two more tricks worth trying once. Press **Ctrl-C** while it works:
+the turn stops mid-flight, nothing half-done poisons the conversation,
+and you can just ask again (in the browser version there's a red ■ Stop
+button that does the same, even while the model is mid-sentence). And
+you don't have to accept the whole toolset: `/tools off bash` switches
+a tool off for the rest of the session and `/tools on bash` brings it
+back — handy when you want the agent to answer without touching
+anything. The web UI's tools panel is the same idea with switches.
+
 What you built maps almost one-to-one onto the big tools:
 
 | Your mini-harness | What the real ones add |
@@ -894,7 +903,7 @@ Each topic has a short, plain-written note with the war stories:
 | A browser window on your agent — and a tool for asking *you* things | [notes/22](notes/22-web-ui.md) |
 | Tools that make it self-reliant: glob, todos, web fetch, background jobs, seeing pictures | [notes/23](notes/23-glob.md) · [notes/24](notes/24-todo-lists.md) · [notes/25](notes/25-web-fetch.md) · [notes/26](notes/26-background-bash.md) · [notes/27](notes/27-read-image.md) |
 | Operating web apps (JS-rendered pages) on a headless browser: browser_open/click/fill/close | [notes/28](notes/28-browser-tools.md) |
-| Too many tools? Per-turn selection, the always-loaded core, and hiding tools you never want | [notes/17](notes/17-tool-selection.md) |
+| Too many tools? Per-turn selection, the always-loaded core, and switching tools off mid-conversation | [notes/17](notes/17-tool-selection.md) |
 
 And the best exercise known to man: point your finished `agent.py` at
 its own source code and ask it how the loop works. It can read itself.

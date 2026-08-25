@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from akshara.tools.base import Tool, ToolContext
@@ -83,6 +83,13 @@ class ToolCatalog:
     k1: float = 1.5       # BM25 term-frequency saturation
     b: float = 0.75       # length-normalization strength
     must_include: tuple[str, ...] = ("list_available_tools",)
+    #: Names the operator has pulled this session (ToolRegistry.is_disabled,
+    #: wired by enable_selection). Hidden tools burn no selection slots and
+    #: are never soft-admitted; None means nothing is hidden.
+    hidden: Callable[[str], bool] | None = None
+
+    def _visible(self, tool: Tool) -> bool:
+        return not (self.hidden and self.hidden(tool.name))
 
     def __post_init__(self) -> None:
         self._docs: list[list[str]] = []
@@ -108,7 +115,7 @@ class ToolCatalog:
 
     def get(self, name: str) -> Tool | None:
         for tool in self.tools:
-            if tool.name == name:
+            if tool.name == name and self._visible(tool):
                 return tool
         return None
 
@@ -140,9 +147,12 @@ class ToolCatalog:
                must_include: Iterable[str] | None = None) -> list[Tool]:
         """Top-K tools for this turn. Pins ALWAYS return (when they exist);
          the rest of the budget goes to positive-scoring matches, best first.
-        A query nothing matches returns just the pins -- never a guess."""
+        A query nothing matches returns just the pins -- never a guess.
+        Operator-hidden tools are skipped everywhere -- including as pins,
+        which is what lets CORE_PINS stay a static list."""
+        visible = [t for t in self.tools if self._visible(t)]
         pins = self.must_include if must_include is None else must_include
-        by_name = {t.name: t for t in self.tools}
+        by_name = {t.name: t for t in visible}
         chosen: dict[str, Tool] = {}
         for name in pins:
             if name in by_name:
@@ -151,6 +161,8 @@ class ToolCatalog:
         ranked = sorted(zip(self.scores(query), self.tools),
                         key=lambda pair: pair[0], reverse=True)
         for score, tool in ranked:
+            if not self._visible(tool):
+                continue
             if len(chosen) >= k:
                 break
             if score <= 0:     # floor: no vocabulary overlap -> exclude
@@ -228,20 +240,27 @@ class ListAvailableTools(Tool):
     }
     read_only = True
 
-    def __init__(self, catalog: ToolCatalog) -> None:
+    def __init__(self, catalog: ToolCatalog, *,
+                 hidden: Callable[[str], bool] | None = None) -> None:
         self.catalog = catalog
+        # Operator-disabled tools must not be SUGGESTED either -- pointing
+        # the model at a tool whose next call errors would teach it to
+        # retry. enable_selection wires this to ToolRegistry.is_disabled;
+        # bare catalogs (tests, embedders) hide nothing.
+        self.hidden = hidden or (lambda name: False)
 
     def summary(self, args: dict, ctx: ToolContext) -> str:
         return f"list_available_tools(filter={args.get('filter_term')!r})"
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         needle = str(args.get("filter_term") or "").lower()
+        visible = [t for t in self.catalog.tools if not self.hidden(t.name)]
         lines = []
-        for tool in self.catalog.tools:
+        for tool in visible:
             line = f"{tool.name} — {tool.description}"
             if not needle or needle in line.lower():
                 lines.append(line)
-        header = f"{len(lines)} tool(s) available (of {len(self.catalog.tools)}):"
+        header = f"{len(lines)} tool(s) available (of {len(visible)}):"
         return "\n".join([header, *lines]) if lines else \
             f"no tool matches {needle!r}; try a shorter filter"
 
@@ -257,18 +276,28 @@ def enable_selection(registry, *, k: int = 7,
     skipped silently, so a pin list may be written against the FULL
     default toolset. IDEMPOTENT -- calling twice re-points the live
     discovery instance at the rebuilt index instead of colliding.
-    Assign ``agent.tool_catalog`` and set ``agent.tools_per_turn = k``
-    (explicit wiring over hidden magic)."""
+    The registry's runtime-disable set is consulted LIVE on every select()
+    and listing (not baked into the index), so /tools off takes effect
+    immediately. Assign ``agent.tool_catalog`` and set
+    ``agent.tools_per_turn = k`` (explicit wiring over hidden magic)."""
     catalog = ToolCatalog([t for t in registry
                            if t.name != "list_available_tools"])
-    if "list_available_tools" in registry:
-        discovery = registry.get("list_available_tools")
-        discovery.catalog = catalog  # re-point; keep one registered instance
-        catalog.add(discovery)
-    else:
+    discovery: ListAvailableTools | None = None
+    for tool in registry:  # __iter__, NOT .get(): .get refuses disabled
+        # tools, and re-pointing the hatch must work even if the operator
+        # disabled it moments ago.
+        if tool.name == "list_available_tools":
+            discovery = tool  # type: ignore[assignment]
+            break
+    if discovery is None:
         discovery = ListAvailableTools(catalog)
-        catalog.add(discovery)
         registry.register(discovery)
+    discovery.catalog = catalog  # re-point; keep one registered instance
+    discovery.hidden = registry.is_disabled
+    catalog.add(discovery)
+    # Runtime disables are consulted live through this predicate -- both
+    # for what selection may pick and what discovery may suggest.
+    catalog.hidden = registry.is_disabled
     # Pins resolve against the FINAL toolset (discovery included), deduped,
     # so must_include always names what will actually pin.
     present = {t.name for t in catalog.tools}

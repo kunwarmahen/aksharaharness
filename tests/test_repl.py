@@ -359,3 +359,63 @@ class TestYoloCommand:
         repl._command("/yolo on")
         assert not isinstance(gate, SwitchableGate)  # untouched static fn
         assert "fixed" in console.file.getvalue()
+
+
+class TestToolsCommand:
+    """`/tools off|on NAME|GLOB`: the terminal twin of the web panel's
+    switches. Pulls are live immediately and reversible in-session."""
+
+    def _repl(self):
+        from akshara.tools.base import ToolRegistry
+        from akshara.tools.fs import ReadFile, WriteFile
+        from akshara.tools.glob import Glob
+
+        registry = ToolRegistry()
+        registry.register(ReadFile())
+        registry.register(WriteFile())
+        agent = Agent(ScriptedProvider([]), model="m", tools=registry,
+                      permissions=SwitchableGate(allow_read_only))
+        console = Console(file=io.StringIO(), width=100)
+        repl = Repl(agent, console, input_fn=lambda _prompt: "")
+        return repl, console
+
+    def test_off_then_on_round_trip(self):
+        repl, console = self._repl()
+        assert repl._command("/tools off write_file") is False
+        assert repl.agent.registry.is_disabled("write_file")
+        assert "disabled 1 tool(s)" in console.file.getvalue()
+        assert repl._command("/tools on write_file") is False
+        assert not repl.agent.registry.is_disabled("write_file")
+
+    def test_glob_patterns_match_like_the_env_kill_switch(self):
+        from akshara.tools.glob import Glob
+
+        repl, console = self._repl()
+        repl.agent.registry.register(Glob())  # name: "glob"
+        repl._command("/tools off *_file")
+        assert repl.agent.registry.disabled_names() == ["read_file",
+                                                        "write_file"]
+        repl._command("/tools on read_file")
+        assert repl.agent.registry.disabled_names() == ["write_file"]
+
+    def test_listing_marks_disabled_and_keeps_them_visible(self):
+        repl, console = self._repl()
+        repl._command("/tools off write_file")
+        console.file.truncate(0)
+        console.file.seek(0)
+        repl._command("/tools")
+        out = console.file.getvalue()
+        assert "[off]" in out                    # marked ...
+        assert "write_file" in out               # ... but still listed
+        assert "disabled this session (1)" in out
+
+    def test_unknown_pattern_warns_without_touching_registry(self):
+        repl, console = self._repl()
+        repl._command("/tools off ghost_tool")
+        assert "no tool matches" in console.file.getvalue()
+        assert repl.agent.registry.disabled_names() == []
+
+    def test_bare_off_needs_a_name(self):
+        repl, console = self._repl()
+        repl._command("/tools off")
+        assert "usage:" in console.file.getvalue()
