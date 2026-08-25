@@ -1,3 +1,4 @@
 {
-  "deploy-checklist": "run uv run pytest before every deploy"
+  "deploy-checklist": "run uv run pytest before every deploy",
+  "user-prefers": "User's favorite text editor is Vim."
 }

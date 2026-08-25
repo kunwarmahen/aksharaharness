@@ -86,6 +86,31 @@ as the live feed. Plain request/response controls stay REST
 run mid-turn (409) — the REPL serves slash commands between turns too;
 same single-operator assumption.
 
+## Rendering the model's prose
+
+Models answer in markdown — headers, tables, fenced code — and a
+transcript that shows those literally is failing at its one job. The
+fix is `static/md.js`, ~150 lines of hand-rolled renderer with no
+library and no build step (the page can't fetch a CDN anyway; the CSP
+forbids it, same rule that keeps the core deps at httpx + rich).
+
+The security model is stated once in its header and enforced
+everywhere: model text is HTML-escaped FIRST, then wrapped in tags we
+generate ourselves. `<script>` arrives as visible text; link URLs must
+look like `http(s)`/`mailto` or they degrade to plain text. The parser
+covers what models actually emit — headings mapped two levels down (a
+chat message isn't a document outline), nested lists by indentation,
+pipe tables, fenced code, blockquotes — and deliberately not images.
+
+Streaming shapes the integration more than parsing does: deltas
+re-render the whole message but throttled to one pass per animation
+frame, and a partial document (half a table, an open fence) simply
+renders as far as it got; `turn_end` carries the complete text and its
+final render settles any artifact. Ten offline tests execute md.js
+under node (`test_md_renderer.py`, skipped when node is absent) — the
+escaping rules are pinned hardest, because they're the part that must
+never regress.
+
 A war story from the REST side: `SessionStore` was built on the main
 thread, but FastAPI handlers execute on the event-loop thread — and
 SQLite connections are thread-affine by default, so every `/api/save`
@@ -115,7 +140,7 @@ live below, including the case where it *doesn't* feel instant.
 
 ## What the tests pin
 
-31 new offline tests, no network, no key:
+41 new offline tests, no network, no key:
 
 * `test_ask_user.py` (17): free-text and choice answers reach history
   with the `(picked option k/N)` marker; five arg-validation ToolErrors;
@@ -131,6 +156,10 @@ live below, including the case where it *doesn't* feel instant.
   save/load with injectable provider factories — plus the strict path:
   restoring a checkpoint whose provider has no key fails cleanly and
   leaves the live agent untouched.
+* `test_md_renderer.py` (10): the page's markdown renderer executed by
+  node — escaping above all (model HTML stays text), emphasis/code/
+  strike, heading mapping, fenced code, tables, nested and ordered
+  lists, scheme-checked links, `<br>` paragraphs, blockquotes/rules.
 
 ## Live receipt
 

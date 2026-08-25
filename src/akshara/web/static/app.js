@@ -14,10 +14,17 @@ const ui = {
   turnActive: false,
   staged: [],            // [{filename, data_base64, url}]
   currentAssistant: null, // streaming text node
+  assistantText: "",      // raw markdown accumulated for it
+  renderQueued: false,    // rAF throttle for live re-rendering
   currentThinking: null,
   openToolCard: null,     // tool_start awaiting its result
   modalId: null,
 };
+
+function forgetAssistant() {
+  ui.currentAssistant = null;
+  ui.assistantText = "";
+}
 
 /* ---------- connection ---------- */
 
@@ -88,7 +95,8 @@ function onState(env) {
   if (!ui.connected) {
     ui.connected = true;
     transcript.textContent = "";
-    ui.currentAssistant = ui.currentThinking = ui.openToolCard = null;
+    forgetAssistant();
+    ui.currentThinking = ui.openToolCard = null;
     fetchHistory();
   }
   applyHeader(env);
@@ -120,14 +128,16 @@ function applyHeader(s) {
 
 function beginTurn() {
   ui.turnActive = true;
-  ui.currentAssistant = ui.currentThinking = ui.openToolCard = null;
+  forgetAssistant();
+  ui.currentThinking = ui.openToolCard = null;
   setStatus("connecting…");
   setTurnUI(true);
 }
 
 function endTurn() {
   ui.turnActive = false;
-  ui.currentAssistant = ui.currentThinking = ui.openToolCard = null;
+  forgetAssistant();
+  ui.currentThinking = ui.openToolCard = null;
   hideStatus();
   setTurnUI(false);
 }
@@ -191,16 +201,29 @@ function ensureAssistant() {
 }
 
 function appendDelta(text) {
+  ui.assistantText += text;
   const el = ensureAssistant();
   el.classList.remove("empty");
-  el.textContent += text;
-  scrollDown();
+  // Live markdown re-render, throttled to one per animation frame:
+  // a partial document (half a table, an open fence) renders as far as
+  // it goes, and turn_end's full-text pass settles any artifact.
+  if (!ui.renderQueued) {
+    ui.renderQueued = true;
+    requestAnimationFrame(() => {
+      ui.renderQueued = false;
+      if (ui.currentAssistant) {
+        ui.currentAssistant.innerHTML = renderMarkdown(ui.assistantText);
+        scrollDown();
+      }
+    });
+  }
 }
 
 function assistantTextDone(text) {
   const el = ensureAssistant();
   el.classList.remove("empty");
-  el.textContent = text; // replay replaces rather than appends
+  ui.assistantText = text; // replay replaces rather than appends
+  el.innerHTML = renderMarkdown(text);
   scrollDown();
 }
 
@@ -230,7 +253,7 @@ const OUTPUT_PREVIEW = 400;
 
 function openToolCard(name) {
   ui.currentThinking = null; // thinking block ends where tools begin
-  ui.currentAssistant = null;
+  forgetAssistant();
   const card = document.createElement("div");
   card.className = "tool-card running";
   card.innerHTML = `
@@ -303,13 +326,13 @@ function onTurnEnd(env) {
     return;
   }
   if (env.text && env.text.trim()) {
-    assistantTextDone(env.text);
+    assistantTextDone(env.text); // final full-text pass: settles streaming
   } else {
     // end_turn with only thinking/tool noise -- say so rather than
     // leaving the operator staring at silence (mirrors render.py)
     const el = ensureAssistant();
     el.classList.remove("empty");
-    if (!el.textContent) el.textContent = "(no text in reply)";
+    if (!ui.assistantText.trim()) el.textContent = "(no text in reply)";
   }
   const foot = document.createElement("div");
   foot.className = "turn-foot";
@@ -389,33 +412,6 @@ function renderEditBox(env, answer, dismissKeyHandler) {
       if (edited === null || typeof edited !== "object"
           || Array.isArray(edited)) throw new Error("must be a JSON object");
       if (dismissKeyHandler) document.removeEventListener("keydown", dismissKeyHandler);
-      answer({ decision: "edit", edited_args: edited });
-      // server re-sends an updated permission_request; nothing else to do
-    } catch (err) {
-      alert(`bad edit: ${err.message}`);
-    }
-  };
-}
-
-function renderEditBox(env, answer) {
-  const box = document.createElement("div");
-  box.innerHTML = `
-    <textarea id="edit-args">${esc(JSON.stringify(env.arguments ?? {}, null, 2))}</textarea>
-    <div class="modal-actions">
-      <button class="m-btn" id="edit-cancel">back</button>
-      <button class="m-btn primary" id="edit-review">review edited call</button>
-    </div>`;
-  const old = $("#modal").querySelector(".modal-actions, details, .summary");
-  [...$("#modal").children].forEach((c) => {
-    if (!c.classList.contains("kind-tag")) c.remove();
-  });
-  $("#modal").append(box);
-  box.querySelector("#edit-cancel").onclick = () => showPermissionModal(env);
-  box.querySelector("#edit-review").onclick = () => {
-    try {
-      const edited = JSON.parse(box.querySelector("#edit-args").value);
-      if (edited === null || typeof edited !== "object"
-          || Array.isArray(edited)) throw new Error("must be a JSON object");
       answer({ decision: "edit", edited_args: edited });
       // server re-sends an updated permission_request; nothing else to do
     } catch (err) {
@@ -581,7 +577,8 @@ $("#btn-load").onclick = async () => {
   if (d) {
     applyHeader(d);
     transcript.textContent = "";
-    ui.currentAssistant = ui.currentThinking = ui.openToolCard = null;
+    forgetAssistant();
+  ui.currentThinking = ui.openToolCard = null;
     await fetchHistory();
     toast("restored");
   }
@@ -601,7 +598,8 @@ $("#btn-clear").onclick = async () => {
   if (d) {
     applyHeader(d);
     transcript.textContent = "";
-    ui.currentAssistant = ui.currentThinking = ui.openToolCard = null;
+    forgetAssistant();
+  ui.currentThinking = ui.openToolCard = null;
     toast("history cleared");
   }
 };
