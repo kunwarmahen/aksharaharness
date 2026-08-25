@@ -169,6 +169,25 @@ def default_tool_select() -> int | None:
         ) from None
 
 
+def browser_profile() -> Path | None:
+    """Persistent Chromium profile dir from $AKSHARA_BROWSER_PROFILE.
+
+    Set (a directory path) => every browser_* session -- and the headed
+    one-shot opened by ``--browse-login`` -- shares this on-disk
+    profile: log in once and every later session rides the saved
+    cookies/localStorage. Unset => each session starts fresh, nothing
+    persists (the safe default; a profile IS a plaintext credential
+    store, so keeping it off until asked for is the honest default).
+    A blank value counts as unset -- copying .env.example leaves empty
+    templates around, and they must not shadow the code's own fallback.
+    """
+    raw = os.environ.get("AKSHARA_BROWSER_PROFILE", "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else Path.cwd() / path
+
+
 def disabled_tool_patterns() -> list[str]:
     """Glob patterns from $AKSHARA_DISABLED_TOOLS (comma-separated).
 

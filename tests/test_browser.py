@@ -11,14 +11,17 @@ from __future__ import annotations
 import sys
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
+import akshara.cli.main as cli_main
 from akshara.errors import ToolError
 from akshara.tools import BrowserClick, BrowserClose, BrowserFill, \
     BrowserOpen, default_registry
 from akshara.tools.base import ToolContext
-from akshara.tools.browser import MAX_ELEMENTS, BrowserSession
+from akshara.tools.browser import MAX_ELEMENTS, BrowserSession, \
+    run_login_session
 
 URL = "https://fake.local/"
 
@@ -262,6 +265,204 @@ class TestLaunchPaths:
         monkeypatch.setitem(sys.modules, "playwright.sync_api", stub)
         with pytest.raises(ToolError, match="playwright install chromium"):
             BrowserSession().open(URL)
+
+
+class FakeContext:
+    """The sliver of BrowserContext the session touches: pages list,
+    new_page, wait_for_event('close'), close."""
+
+    def __init__(self, pages=()) -> None:
+        self.pages = list(pages)
+        self.closed = False
+        self.waited_for: str | None = None
+
+    def new_page(self) -> FakePage:
+        page = FakePage()
+        self.pages.append(page)
+        return page
+
+    def wait_for_event(self, event: str) -> None:
+        self.waited_for = event
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeChromium:
+    """Records WHICH launch door was used -- launch() vs
+    launch_persistent_context() is the whole ephemeral/persistent
+    contract."""
+
+    def __init__(self, browser=None, context=None) -> None:
+        self.launch_calls: list[dict] = []
+        self.persistent_calls: list[dict] = []
+        self._browser = browser
+        self._context = context
+
+    def launch(self, **kwargs):
+        self.launch_calls.append(kwargs)
+        return self._browser
+
+    def launch_persistent_context(self, **kwargs):
+        self.persistent_calls.append(kwargs)
+        return self._context
+
+
+def install_fake_playwright(monkeypatch, chromium: FakeChromium) -> list:
+    """Swap the playwright import for a recorder; returns the started
+    playwright instances (so tests can pin that stop() always runs)."""
+    started: list = []
+
+    class FakePW:
+        def __init__(self) -> None:
+            self.chromium = chromium
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+            started.append(self)
+
+    stub = types.ModuleType("playwright.sync_api")
+    stub.sync_playwright = lambda: types.SimpleNamespace(start=FakePW)
+    monkeypatch.setitem(sys.modules, "playwright",
+                        types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", stub)
+    return started
+
+
+class TestPersistentProfile:
+    """$AKSHARA_BROWSER_PROFILE set => launch_persistent_context on that
+    dir; unset => today's plain launch. Same four verbs either way."""
+
+    def test_ephemeral_session_launches_a_plain_browser(self, monkeypatch):
+        ephemeral = types.SimpleNamespace(new_page=FakePage)
+        chromium = FakeChromium(browser=ephemeral)
+        install_fake_playwright(monkeypatch, chromium)
+        session = BrowserSession(profile=None)
+        session.open(URL)
+        assert chromium.launch_calls == [{"headless": True}]
+        assert chromium.persistent_calls == []
+
+    def test_profile_launches_a_persistent_context_on_the_dir(
+            self, monkeypatch, tmp_path):
+        chromium = FakeChromium(context=FakeContext())
+        install_fake_playwright(monkeypatch, chromium)
+        out = BrowserSession(profile=tmp_path).open(URL)
+        (kwargs,) = chromium.persistent_calls
+        assert kwargs == {"user_data_dir": str(tmp_path), "headless": True}
+        assert chromium.launch_calls == []
+        assert "hello world" in out  # traffic flows through the context page
+
+    def test_existing_context_page_is_reused_not_duplicated(
+            self, monkeypatch):
+        page = FakePage()
+        context = FakeContext(pages=[page])  # persistent contexts ship one
+        chromium = FakeChromium(context=context)
+        install_fake_playwright(monkeypatch, chromium)
+        session = BrowserSession(profile=Path("/tmp/never-made"))
+        session.open(URL)
+        session.open(f"{URL}page2")
+        assert len(context.pages) == 1
+        assert page.gotos == [URL, f"{URL}page2"]
+
+    def test_close_shuts_down_the_context(self, monkeypatch):
+        context = FakeContext()
+        chromium = FakeChromium(context=context)
+        install_fake_playwright(monkeypatch, chromium)
+        session = BrowserSession(profile=Path("/tmp/never-made"))
+        session.open(URL)
+        assert session.close() is True
+        assert context.closed
+
+    def test_default_sentinel_reads_the_env_once(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AKSHARA_BROWSER_PROFILE", str(tmp_path))
+        assert BrowserSession()._profile == tmp_path
+        monkeypatch.delenv("AKSHARA_BROWSER_PROFILE")
+        assert BrowserSession()._profile is None  # blank/unset => ephemeral
+
+    def test_browser_tools_wire_the_env_knob_through_one_session(
+            self, monkeypatch):
+        monkeypatch.setattr("akshara.tools.browser.find_spec",
+                            lambda name: True)
+        monkeypatch.setenv("AKSHARA_BROWSER_PROFILE", "~/akshara-prof")
+        registry = default_registry()
+        names = ("browser_open", "browser_click", "browser_fill",
+                 "browser_close")
+        sessions = {registry.get(n).browser for n in names}
+        assert len(sessions) == 1
+        (session,) = sessions
+        assert session._profile == Path.home() / "akshara-prof"
+
+
+class TestLoginSession:
+    """run_login_session: the headed half of persistence -- a human beats
+    the login wall once; every later headless run inherits it."""
+
+    def test_missing_extra_names_the_install(self, monkeypatch, tmp_path):
+        monkeypatch.setitem(sys.modules, "playwright", None)
+        monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+        with pytest.raises(ToolError, match=r"aksharaharness\[browse\]"):
+            run_login_session(tmp_path)
+
+    def test_non_http_url_refused_before_any_launch(self, tmp_path):
+        # no playwright stub installed -- refusal must not depend on it
+        with pytest.raises(ToolError, match="only http"):
+            run_login_session(tmp_path, "file:///etc/passwd")
+
+    def test_opens_headed_on_the_profile_and_waits_for_the_window(
+            self, monkeypatch, tmp_path):
+        context = FakeContext()
+        chromium = FakeChromium(context=context)
+        started = install_fake_playwright(monkeypatch, chromium)
+        run_login_session(tmp_path, URL)
+        (kwargs,) = chromium.persistent_calls
+        assert kwargs == {"user_data_dir": str(tmp_path), "headless": False}
+        assert context.pages[0].gotos == [URL]
+        assert context.waited_for == "close"  # the window IS the progress bar
+        assert started and started[0].stopped
+
+    def test_stop_runs_even_when_waiting_explodes(self, monkeypatch,
+                                                  tmp_path):
+        context = FakeContext()
+
+        def boom(event):
+            raise RuntimeError("boom")
+
+        context.wait_for_event = boom
+        chromium = FakeChromium(context=context)
+        started = install_fake_playwright(monkeypatch, chromium)
+        with pytest.raises(ToolError,
+                           match="could not open the login window"):
+            run_login_session(tmp_path)
+        assert started and started[0].stopped
+
+
+class TestBrowseLoginFlag:
+    """CLI wiring: its own mode, dispatched before provider resolution --
+    no model, no API key, on purpose."""
+
+    def test_without_a_profile_names_the_env_var(self, monkeypatch, capsys):
+        monkeypatch.delenv("AKSHARA_BROWSER_PROFILE", raising=False)
+        assert cli_main.main(["--browse-login", URL]) == 2
+        assert "AKSHARA_BROWSER_PROFILE" in capsys.readouterr().err
+
+    def test_with_a_profile_opens_and_reports_saved(self, monkeypatch,
+                                                    tmp_path, capsys):
+        monkeypatch.setenv("AKSHARA_BROWSER_PROFILE", str(tmp_path))
+        seen: dict = {}
+
+        def fake_login(profile, url=None):
+            seen["args"] = (profile, url)
+
+        monkeypatch.setattr("akshara.tools.browser.run_login_session",
+                            fake_login)
+        assert cli_main.main(["--browse-login", URL]) == 0
+        assert seen["args"] == (tmp_path, URL)
+        assert "profile saved" in capsys.readouterr().out
+
+    def test_combining_with_other_modes_is_refused(self):
+        assert cli_main.main(["--browse-login", URL,
+                              "--prompt", "hi"]) == 2
 
 
 class TestGating:

@@ -912,7 +912,7 @@ Each topic has a short, plain-written note with the war stories:
 | Approve-with-edits (the y/n/e gate) | [notes/20](notes/20-approve-with-edits.md) |
 | A browser window on your agent — and a tool for asking *you* things | [notes/22](notes/22-web-ui.md) |
 | Tools that make it self-reliant: glob, todos, web fetch, background jobs, seeing pictures | [notes/23](notes/23-glob.md) · [notes/24](notes/24-todo-lists.md) · [notes/25](notes/25-web-fetch.md) · [notes/26](notes/26-background-bash.md) · [notes/27](notes/27-read-image.md) |
-| Operating web apps (JS-rendered pages) on a headless browser: browser_open/click/fill/close | [notes/28](notes/28-browser-tools.md) |
+| Operating web apps (JS-rendered pages) on a headless browser: browser_open/click/fill/close — and staying logged in, if you sign in once yourself | [notes/28](notes/28-browser-tools.md) |
 | Too many tools? Per-turn selection, the always-loaded core, and switching tools off mid-conversation | [notes/17](notes/17-tool-selection.md) |
 
 And the best exercise known to man: point your finished `agent.py` at

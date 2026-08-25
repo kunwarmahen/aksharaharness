@@ -24,10 +24,21 @@ Scope decisions worth writing down:
   egress from OUTSIDE every sandbox wall, and a browser compounds it
   (form submissions mutate remote state). Each verb gates individually;
   --yolo owns the tradeoff explicitly.
-* HONEST ABOUT WALLS. Login walls, captchas, and bot detection still
-  refuse us -- headless Chromium is not stealth. The tool descriptions
-  say so, and when a site serves a robot check, the snapshot shows the
-  check instead of pretending the mission succeeded.
+* LOGINS LIVE IN A PROFILE, NEVER IN MODEL CONTEXT. With
+  $AKSHARA_BROWSER_PROFILE set, every session launches Chromium on that
+  on-disk profile (launch_persistent_context), so one login -- the
+  human's via --browse-login's headed window, or the model's via an
+  approved fill -- survives restarts. Deliberately NOT a
+  get-cookies verb: raw session tokens in model context are one
+  prompt injection away from exfiltration; a persisted profile keeps
+  them invisible to the model entirely, while the agent simply IS
+  logged in. Unset, each session starts fresh -- nothing persists,
+  which is also the default.
+* HONEST ABOUT WALLS. Captchas and bot detection still refuse us --
+  headless Chromium is not stealth, and no profile changes that. Login
+  walls refuse us only until the profile carries a login; when a site
+  serves a robot check, the snapshot shows the check instead of
+  pretending the mission succeeded.
 
 One mechanical subtlety: Playwright's sync API binds its objects to
 the thread that started them, but tools execute on whatever worker
@@ -39,10 +50,12 @@ executor -- one thread sees all the traffic, whichever loop twin runs.
 from __future__ import annotations
 
 from importlib.util import find_spec
+from pathlib import Path
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, ClassVar
 
+from akshara.config import browser_profile
 from akshara.errors import ToolError
 from akshara.tools.base import Tool, ToolContext, require_str
 from akshara.tools.web_fetch import MAX_RESULT_CHARS, _clip
@@ -126,15 +139,24 @@ def _require_http(url: str) -> str:
 class BrowserSession:
     """The live browser behind all four tools: launch lazily, one page.
 
-    State machine: nothing open -> page open -> closed. ``open`` is the
-    only door in; ``close`` is idempotent; any action without a page
-    says so in model-readable words. All playwright traffic runs on ONE
-    dedicated worker thread (see module docstring for why).
+    Two launch modes share one body: ephemeral (no profile -- a fresh
+    Chromium every time) and persistent ($AKSHARA_BROWSER_PROFILE set --
+    launch_persistent_context on that dir, so cookies/localStorage
+    survive restarts). State machine: nothing open -> page open ->
+    closed. ``open`` is the only door in; ``close`` is idempotent; any
+    action without a page says so in model-readable words. All
+    playwright traffic runs on ONE dedicated worker thread (see module
+    docstring for why).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, profile: Path | None | str = "default") -> None:
+        #: ``"default"`` sentinel: read $AKSHARA_BROWSER_PROFILE once, at
+        #: construction -- tests (and embedders) pass a Path/None instead.
+        self._profile: Path | None = (
+            browser_profile() if profile == "default" else profile)
         self._pw = None
-        self._browser = None
+        self._browser = None   # ephemeral mode
+        self._context = None   # persistent mode (launch_persistent_context)
         self._page = None
         self._elements: dict[str, dict] = {}
         self._exec: ThreadPoolExecutor | None = None
@@ -155,8 +177,18 @@ class BrowserSession:
             raise ToolError(_BROWSER_EXTRA_HINT) from exc
         try:
             self._pw = sync_playwright().start()
-            self._browser = self._pw.chromium.launch(headless=True)
-            self._page = self._browser.new_page()
+            if self._profile is None:
+                self._browser = self._pw.chromium.launch(headless=True)
+                self._page = self._browser.new_page()
+            else:
+                # Chromium locks the dir -- one live session per profile,
+                # which is also the guard against two agents fighting
+                # over one identity.
+                self._profile.mkdir(parents=True, exist_ok=True)
+                self._context = self._pw.chromium.launch_persistent_context(
+                    user_data_dir=str(self._profile), headless=True)
+                pages = self._context.pages
+                self._page = pages[0] if pages else self._context.new_page()
         except ToolError:
             raise
         except Exception as exc:
@@ -167,14 +199,16 @@ class BrowserSession:
                 "  uv run playwright install chromium") from exc
 
     def _teardown(self) -> None:
-        for obj, closer in ((self._page, "close"), (self._browser, "close"),
+        for obj, closer in ((self._page, "close"),
+                            (self._context, "close"),  # closes its pages too
+                            (self._browser, "close"),
                             (self._pw, "stop")):
             if obj is not None:
                 try:
                     getattr(obj, closer)()
                 except Exception:
                     pass  # tearing down a corpse; never mask the real error
-        self._pw = self._browser = self._page = None
+        self._pw = self._browser = self._context = self._page = None
         self._elements = {}
 
     def _require_page(self):
@@ -314,6 +348,47 @@ class BrowserSession:
         return was_open
 
 
+def run_login_session(profile: Path, url: str | None = None) -> None:
+    """Open a HEADED Chromium on ``profile`` and block until it closes.
+
+    The human half of profile persistence -- 2FA, captchas, SSO are
+    beaten by hand ONCE in a visible window (``--browse-login``), and
+    every later headless session on the same profile simply IS logged
+    in. The model's half needs nothing new: an approved browser_fill of
+    a login form lands in the same profile. Raises ToolError for the
+    two known walls (missing extra, missing chromium binary); a locked
+    profile or other launch failure propagates as ToolError too.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise ToolError(_BROWSER_EXTRA_HINT) from exc
+    if url:
+        _require_http(url)  # refuse before paying for a launch
+    profile.mkdir(parents=True, exist_ok=True)
+    pw = sync_playwright().start()
+    try:
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile), headless=False)
+        page = context.pages[0] if context.pages else context.new_page()
+        if url:
+            page.goto(url, wait_until="domcontentloaded",
+                      timeout=GOTO_TIMEOUT_MS)
+        context.wait_for_event("close")  # the window IS the progress bar
+    except Exception as exc:
+        raise ToolError(
+            f"could not open the login window: {type(exc).__name__}: {exc}\n"
+            "if the browser binary itself is missing, run:\n"
+            "  uv run playwright install chromium\n"
+            "if another session holds this profile, close it first -- "
+            "Chromium locks the directory") from exc
+    finally:
+        try:
+            pw.stop()
+        except Exception:
+            pass  # the corpse's problems are not the caller's
+
+
 class _BrowserTool(Tool):
     """Shared wiring: every verb speaks to the same BrowserSession."""
 
@@ -331,7 +406,9 @@ class BrowserOpen(_BrowserTool):
         "shell. Returns the page as readable text plus numbered "
         "interactive elements ([e1], [e2], ...) for browser_click/"
         "browser_fill. Call again with NO url to re-read the current "
-        "page. Login walls and bot checks may refuse; one page at a time."
+        "page. If a persistent profile is configured, logins survive "
+        "restarts -- filling a login form once is enough. Bot checks and "
+        "captchas may still refuse; one page at a time."
     )
     parameters: ClassVar[dict] = {
         "type": "object",
@@ -437,6 +514,6 @@ def browser_tools() -> tuple[Tool, ...]:
     """The four browser verbs sharing one session, or () without the extra."""
     if not browser_available():
         return ()
-    browser = BrowserSession()
+    browser = BrowserSession()  # reads $AKSHARA_BROWSER_PROFILE itself
     return (BrowserOpen(browser), BrowserClick(browser),
             BrowserFill(browser), BrowserClose(browser))
