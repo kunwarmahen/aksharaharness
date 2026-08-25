@@ -35,7 +35,10 @@ ToolResult the model reads and can plan around:
 
 The loop physically cannot be crashed by a tool. KeyboardInterrupt is the
 one deliberate exception — cancellation is not a tool failure, so it
-re-raises.
+re-raises. (Since `ask_user` arrived there are two: `UserUnavailable`
+joins it as a `BaseException` for the same reason — "no human attached"
+is control-flow, not data the model could act on;
+[22-web-ui.md](22-web-ui.md).)
 
 ## THE INVARIANT (the #1 source of 400s in hand-rolled harnesses)
 

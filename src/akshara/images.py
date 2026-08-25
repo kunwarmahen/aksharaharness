@@ -35,6 +35,27 @@ MEDIA_TYPES: dict[str, str] = {
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
+def _media_type_for(name: str) -> str:
+    """Extension -> MIME lookup shared by both loaders."""
+    media_type = MEDIA_TYPES.get(Path(name).suffix.lower())
+    if media_type is None:
+        supported = ", ".join(sorted(MEDIA_TYPES))
+        suffix = Path(name).suffix or "(none)"
+        raise ImageError(
+            f"unsupported image type '{suffix}' "
+            f"for {Path(name).name} -- supported: {supported}"
+        )
+    return media_type
+
+
+def _capped(raw: bytes, name: str) -> None:
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise ImageError(
+            f"{name} is {len(raw) / 1e6:.1f} MB -- over the "
+            f"{MAX_IMAGE_BYTES / 1e6:.0f} MB per-image cap"
+        )
+
+
 def load_image_block(path: Path) -> ImageBlock:
     """Read an image file into a request-ready ImageBlock.
 
@@ -46,21 +67,20 @@ def load_image_block(path: Path) -> ImageBlock:
     if not path.is_file():
         raise ImageError(f"image not found: {path}")
 
-    media_type = MEDIA_TYPES.get(path.suffix.lower())
-    if media_type is None:
-        supported = ", ".join(sorted(MEDIA_TYPES))
-        suffix = path.suffix or "(none)"
-        raise ImageError(
-            f"unsupported image type '{suffix}' "
-            f"for {path.name} -- supported: {supported}"
-        )
-
+    media_type = _media_type_for(str(path))
     raw = path.read_bytes()
-    if len(raw) > MAX_IMAGE_BYTES:
-        raise ImageError(
-            f"{path.name} is {len(raw) / 1e6:.1f} MB -- over the "
-            f"{MAX_IMAGE_BYTES / 1e6:.0f} MB per-image cap"
-        )
+    _capped(raw, path.name)
 
+    return ImageBlock(media_type=media_type,
+                      data=base64.b64encode(raw).decode("ascii"))
+
+
+def image_block_from_bytes(filename: str, raw: bytes) -> ImageBlock:
+    """Same contract, for bytes that never touched a filesystem (web UI
+    uploads arrive base64-decoded over HTTP). Same shallow philosophy:
+    the extension decides the MIME type, size is capped, pixels un-sniffed.
+    """
+    media_type = _media_type_for(filename)
+    _capped(raw, filename)
     return ImageBlock(media_type=media_type,
                       data=base64.b64encode(raw).decode("ascii"))

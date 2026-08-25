@@ -8,6 +8,11 @@ Two families, kept deliberately separate:
 * Tool failures (``ToolError``) NEVER propagate. The agent loop converts
   them into ``is_error`` ToolResults so the model can see what went
   wrong and recover. Errors are data.
+
+Plus one control-flow escape that belongs to neither family:
+``UserUnavailable`` (and KeyboardInterrupt before it) derives from
+BaseException so no ``except Exception`` anywhere in the loop can
+launder it into model-visible data -- see its own docstring.
 """
 
 from __future__ import annotations
@@ -55,6 +60,24 @@ class ToolError(Exception):
 
     Converted to an is_error ToolResult by the agent loop -- the loop
     itself never sees this exception.
+    """
+
+
+class UserUnavailable(BaseException):
+    """``ask_user`` ran with no interactive user attached (headless one-shot,
+    piped stdin, evals, a build agent). Terminal for the turn, like a
+    ProviderError.
+
+    Deliberately ``BaseException``, not ``Exception``: the loop's
+    errors-are-data conversion exists to protect the MODEL from tool
+    failures it could read about and recover from. "Nobody is home" is
+    not recoverable -- retrying cannot conjure a user -- so handing the
+    model an error result would only invite exactly the guessing this
+    signal exists to prevent. Like KeyboardInterrupt (the other
+    control-flow escape from a tool), it must survive every broad
+    ``except Exception`` between the tool and the UI that reports it.
+    History stays resumable: the loop synthesizes the outstanding tool
+    result on its way out.
     """
 
 

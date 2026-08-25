@@ -3,7 +3,8 @@
 A learning project: build the machinery behind tools like Claude Code —
 an agentic loop around a chat model, a JSON-Schema tool system, a
 permission gate, hand-parsed streaming — **without SDKs, pydantic, or
-frameworks**. Runtime deps: `httpx` and `rich` only.
+frameworks**. Runtime deps: `httpx` and `rich` only; the optional
+browser UI adds `fastapi` + `uvicorn` behind a `[web]` extra.
 
 The code is the tutorial; [`notes/`](notes/) is the per-topic
 write-up. New to agents entirely?
@@ -110,6 +111,26 @@ to the terminal live):
 uv run akshara --subagents "research X and report back"
 ```
 
+Browser UI ([notes/22](notes/22-web-ui.md)) — `--web` serves the same
+agent loop at `http://127.0.0.1:8321` (`--host`/`--port` to move it):
+streamed replies and thinking, tool cards, permission prompts with
+approve/deny/**edit**, image attachments, save/load/compact/model
+switches, and a Cancel button that mirrors Ctrl-C. Install the extra
+once: `uv sync --extra web`.
+
+```bash
+uv run akshara --provider ollama --web      # local model + browser UI
+uv run akshara --web                        # provider auto-guessed, as usual
+```
+
+The `ask_user` tool rides along in every surface: when the model hits a
+question only you can answer ("Postgres or SQLite?", "may I delete
+it?"), it pauses mid-turn and asks — numbered choices plus free text at
+the terminal prompt, a modal in the browser — then proceeds on your
+answer. With no interactive terminal attached (piped stdin, cron,
+evals), asking fails the turn loudly rather than guessing; history
+stays resumable for a later interactive run ([notes/22](notes/22-web-ui.md)).
+
 Evals (trajectory-level, real model, costs money — merge/nightly
 cadence, not per-commit; exit code doubles as a CI gate):
 
@@ -211,7 +232,9 @@ Internal types are the only representation the rest of the program sees.
 ```
 src/akshara/
 ├── types.py        shared vocabulary: Message/Block/ToolCall/ToolResult, StreamEvent union
-├── errors.py       ProviderError family (terminal) vs ToolError family (become data)
+├── errors.py       ProviderError family (terminal for the turn) vs ToolError
+│                   family (become data the model reads) vs UserUnavailable
+│                   (control-flow BaseException: nobody home to ask)
 ├── config.py       env vars -> ProviderSettings (+ .env auto-load)
 ├── agent.py        THE LOOP: model -> tool calls -> results -> repeat; optional
 │                   per-turn tool selection (send AND execute only the top-K)
@@ -274,8 +297,19 @@ src/akshara/
 │   │               list_available_tools discovery hatch ([notes/17](notes/17-tool-selection.md))
 │   ├── search.py   grep — ripgrep subprocess when available, pure-python
 │   │               walker fallback (identical output contract)
-│   └── memory.py   scratchpad: write_note / recall_notes — JSON store under
+│   ├── memory.py   scratchpad: write_note / recall_notes — JSON store under
 │                   .akshara/, ranked substring retrieval, survives restarts
+│   └── ask_user.py pause-and-ask-the-human tool: UserChannel protocol
+│                   (terminal stdin, browser websocket, or None = headless
+│                   fails the turn) — the model's escape hatch from guessing
+│                   ([notes/22](notes/22-web-ui.md))
+├── web/            FastAPI skin over the SAME sync loop: each turn runs on a
+│                   worker thread pulling run_streaming(); a queue bridge
+│                   carries human questions (permission + ask_user) to the
+│                   browser over one websocket; envelope protocol,
+│                   replay-on-reconnect, REST session controls; static/
+│                   holds the no-build vanilla-JS page
+│                   ([notes/22](notes/22-web-ui.md))
 └── cli/            main.py (argparse) · repl.py (input loop) · render.py (rich)
 ```
 
@@ -284,7 +318,10 @@ Design rules worth stealing:
 * **Errors are data.** A crashing/denied/nonexistent tool becomes an
   `is_error` tool result the model reads and recovers from; the loop
   cannot be crashed by a tool. Provider errors (auth/rate-limit/overflow)
-  are the opposite: exceptions, terminal for the turn.
+  are the opposite: exceptions, terminal for the turn. A third family,
+  `UserUnavailable`, is deliberately neither — a `BaseException` that
+  fails the turn when `ask_user` runs with no human attached, because
+  no error message could teach the model to conjure a user.
 * **The history invariant:** every tool_call id gets a matching result
   before the next request — enforced on every exit path including
   iteration caps and mid-turn Ctrl-C ([notes/05](notes/05-agent-loop.md)).
@@ -361,7 +398,7 @@ end ([notes/03](notes/03-sse-and-collect.md)).
 ## Run & test
 
 ```bash
-uv run pytest -q                 # full offline suite: 437 tests, NO network, NO key
+uv run pytest -q                 # full offline suite: 480 tests, NO network, NO key
 
 # everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
 uv run python examples/one_shot.py "Why is the sky blue?"
@@ -373,6 +410,7 @@ uv run python examples/agent_loop_demo.py --deny-all # denial-as-data demo
 uv run python examples/async_demo.py                 # 4 conversations, seq vs concurrent
 uv run python examples/builder_demo.py               # agent BUILDS a project, verified
 uv run akshara                                       # REPL
+uv run akshara --provider ollama --web               # REPL in your browser (free, local)
 uv run akshara --yolo "run: echo hi"                 # one-shot, no prompts
 uv run akshara --cache                               # prompt caching on
 uv run python examples/cache_demo.py                 # cache hit, measured live
@@ -389,20 +427,26 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 438 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 480 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
-mock transports whose policy path is identical to the live one.
+mock transports whose policy path is identical to the live one. The
+browser UI runs fully offline as well: FastAPI's test client drives the
+real routes against scripted turns.
 
 Everything above has also been exercised against real providers —
 all three dialects via OpenRouter (cloud models) plus local Ollama
 for end-to-end runs of sandboxing, build mode, MCP, sub-agents,
-evals, caching, hooks, and vision. The `examples/` demos rerun most
-of it on demand. Live testing shook out four real bugs along the way,
-all fixed and now regression-tested: gateway `null` token counters
-poisoning `Usage.add()`, an orphaned child process when Ctrl-C lands
-mid-bash, thinking blocks that must round-trip verbatim through tool
-loops (including unsigned ones behind a gateway that still validates
-the field), and an inverted yolo-warning guard in the banner
-([notes/02](notes/02-wire-formats.md), [notes/04](notes/04-tools.md),
-[notes/06](notes/06-cli.md)).
+evals, caching, hooks, vision, `ask_user`, and the web UI. The
+`examples/` demos rerun most of it on demand. Live testing shook out
+four real bugs along the way, all fixed and now regression-tested:
+gateway `null` token counters poisoning `Usage.add()`, an orphaned
+child process when Ctrl-C lands mid-bash, thinking blocks that must
+round-trip verbatim through tool loops (including unsigned ones behind
+a gateway that still validates the field), and an inverted
+yolo-warning guard in the banner ([notes/02](notes/02-wire-formats.md),
+[notes/04](notes/04-tools.md), [notes/06](notes/06-cli.md)). Building
+the web layer shook out two more, both caught by its tests before they
+could ship: SQLite connections used from the server thread without
+`check_same_thread=False` (every save 500'd), and a web permission
+gate that popped approval modals for read-only tools.

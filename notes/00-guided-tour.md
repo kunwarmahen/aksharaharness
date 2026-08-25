@@ -72,7 +72,9 @@ One folder per job (`src/akshara/`):
  │                 (the actual model lives far away)         
  │                                                           
  │   tools/          the hands: read_file, bash, grep …      
+ │   ask_user.py     when the agent needs to ask YOU something
  │   permissions.py  the seatbelt: ask y/n/e before danger   
+ │   web/            a browser window onto this same loop    
  │   types.py        the shared vocabulary everyone speaks   
  │   config.py       finds your API key in .env              
  └───────────────────────────────────────────────────────────┘
@@ -258,6 +260,23 @@ Want a log of every command the agent executed, or timing numbers?
 Attach two small observer functions and never edit the loop at all.
 One rule keeps them apart: a hook can never say no ([notes/14](notes/14-hooks.md)).
 
+### The question travels the other way, too
+
+Pausing for *yes-or-no* isn't the only conversation worth having.
+Sometimes the model is missing a fact no tool can find — which database
+you actually use, what tone you want, whether "deploy" means staging or
+production. Guessing wastes real work. So there's an `ask_user` tool
+that stops the turn and asks **you** a question: numbered choices if it
+can offer options, free text always. Your answer goes back into the
+transcript like any tool result, and work resumes on your word.
+
+And where does that conversation happen? Wherever you are. At the
+terminal it's an ordinary prompt line. With `--web`, the same loop
+serves a small local web page: replies stream live, tools appear as
+cards, approvals become buttons, images attach by drag-and-drop, and
+questions from the agent pop up as modals. It's a window onto the very
+same machine — not a second one ([notes/22](notes/22-web-ui.md)).
+
 ## 9 · When things go wrong: bad news becomes data
 
 Tools misbehave: typos in commands, missing files, genuine bugs. A
@@ -276,9 +295,11 @@ naive harness crashes. Ours has one rule:
 
 The loop physically cannot be crashed by a broken tool — the worst case
 is a wasted round-trip where the model learns "that didn't work."
-Only two things are allowed to stop a turn: you pressing Ctrl-C
-(cancellation), or the provider being unreachable (auth/rate-limit —
-no point continuing if there's nobody to talk to).
+Only three things are allowed to stop a turn: you pressing Ctrl-C
+(cancellation), the provider being unreachable (auth/rate-limit — no
+point continuing if there's nobody to talk to), or `ask_user` running
+with nobody home to answer (a headless run can't conjure a human; see
+§8).
 
 ## 10 · The promise book (why this doesn't 400)
 
@@ -472,10 +493,11 @@ machine; it is the same circle, pointed at a harder task.
 
 ```bash
 uv sync                                   # one-time setup
-uv run pytest -q                          # full offline suite (~430 tests)
+uv run pytest -q                          # full offline suite (~480 tests)
 
-# the rest talks to a real model (needs a key in .env):
+# the rest talks to a real model (needs a key, or a local Ollama):
 uv run akshara                            # interactive session
+uv run akshara --provider ollama --web    # the same session in your browser
 uv run akshara --yolo "summarize README.md"
 uv run python examples/agent_loop_demo.py # watch the loop, event by event
 uv run python examples/builder_demo.py    # watch it BUILD a project
@@ -510,4 +532,6 @@ prompt without complaint. That recovery path is §10 made visible.
 | MTok | million tokens, the unit prices are quoted in; `/usage` turns counters into dollars via a price table (notes/21) |
 | eval | a graded exam for agents: did the trajectory do the right things, not just say them |
 | hook | an observer clipped onto tool executions — it watches and records, it can never forbid |
+| ask_user | a tool that pauses the turn to ask *you* a question, then continues on your answer (§8) |
+| web UI | `--web`: a local browser page driving the same loop — streaming, approval buttons, agent questions as modals (notes/22) |
 | image block | a picture the user attaches (base64); translated per-dialect on the way out only — see notes/15 |

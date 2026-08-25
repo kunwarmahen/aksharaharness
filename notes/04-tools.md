@@ -151,3 +151,30 @@ to learn must be written down or it stops existing after an auto-compact.
 Verified live across PROCESSES: one session saved a deploy checklist via
 write_note; a brand-new process recalled it by query — persistence is
 the feature, so the verification crosses the boundary it claims to.
+
+## ask_user: a tool can hold a service, not just do work
+
+Every tool before this one closed over *state* (memory.json's path) or
+*capabilities* (a sandbox). `ask_user` closes over a **service** — a
+`UserChannel` with one blocking method, `ask()`, that returns whatever
+the human said. The REPL injects stdin, the web UI injects a websocket
+round-trip ([22-web-ui.md](22-web-ui.md)), tests inject a canned
+answer; the tool object never knows which.
+
+Three contract details that earned their keep:
+
+* `read_only=True` — asking costs nothing and touches nothing, so it
+  never triggers the permission gate in any frontend.
+* Choices are capped at 6 with a ToolError beyond — an option list is a
+  hint, not a menu, and the user can always type something else.
+* The blocking is honest. Tools already run on worker threads, so
+  "wait for a human" is just another slow IO — bounded by the human's
+  patience rather than a timeout, which is right for a question worth
+  stopping work over.
+
+The headless case gets its own exception family, not an error result:
+with `channel=None` (piped stdin, cron, evals) a call raises
+`UserUnavailable` — a deliberate `BaseException` so the loop's
+convert-failures-to-data rule cannot hand the model a "no user found"
+note it would try to explain away with a guess. Nobody home is not the
+model's problem to fix.

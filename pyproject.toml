@@ -11,6 +11,15 @@ dependencies = [
 [project.scripts]
 akshara = "akshara.cli.main:main"
 
+# Optional browser UI (akshara --web). The core stays httpx + rich; the web
+# layer is a deliberate exception -- FastAPI/uvicorn serve it, chosen over
+# hand-rolling an HTTP server when this feature called for one.
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
 [dependency-groups]
 dev = ["pytest>=8.3"]
 

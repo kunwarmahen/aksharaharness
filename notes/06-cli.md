@@ -146,3 +146,26 @@ warning had an inverted condition -- it announced "no permission
 prompts" precisely when the gate WAS active. Nobody noticed while live
 tests ran *with* `--yolo`; the warning only shows correctly in runs
 that don't use it. Classic inverted-guard blind spot.
+
+## A second front door: --web, and choosing where the human is
+
+`main.py` grew one more mode with no new agent logic: `--web` builds a
+`WebSession` *before* the Agent (the browser gate is injected at
+construction, same as `confirm_gate`), then hands the finished session
+to `akshara.web.server.launch()` ([22-web-ui.md](22-web-ui.md)). The
+layering rule held: main.py picks the front door; the door owns how to
+ask.
+
+The same moment gave every run a second question to answer — not just
+"which gate?" but "**where is the human?**", decided by TTY detection:
+
+* interactive REPL / one-shot on a terminal → `TerminalChannel()`
+  (numbered choices + free text at the prompt);
+* piped stdin or captured output → `AskUser(None)` — headless, any call
+  raises `UserUnavailable`, which fails a one-shot with exit 1 and a
+  REPL turn without killing the session;
+* `--web` → the session itself (it implements `.ask()` over its
+  websocket bridge).
+
+One registration site, three channels — the frontend decides how to
+reach the person, the tool stays ignorant of all of them.
