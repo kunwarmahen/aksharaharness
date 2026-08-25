@@ -117,6 +117,54 @@ the prompt hits EOF on closed stdin, the denial becomes a tool result
 ("permission gate failed: EOF when reading a line"), and the model
 reports the failure truthfully instead of hallucinating an echo.
 
+## Runtime management: servers you can unplug
+
+Startup wiring (`--mcp-config`) answers "which servers exist"; it does
+not answer "which servers exist RIGHT NOW". `MCPManager` makes the
+answer mutable mid-session — one owner object for every live session,
+shared by the web UI's servers panel and the REPL's `/mcp` commands so
+both stay in step by construction:
+
+```
+/mcp                          # list: name (transport) [down] · saved — target — N tool(s)
+/mcp off tiny   /mcp on tiny  # soft toggle: whole toolset, process stays warm
+/mcp add tiny python srv.py   # connect NOW (asks whether to remember)
+/mcp remove tiny              # kill child, unregister tools, forget saved entry
+```
+
+The decisions worth writing down:
+
+* **Two verbs for two intents.** `/mcp off` is the tools switch
+  ([17-tool-selection.md](17-tool-selection.md)) pointed at every
+  qualified name of one server: registry-disabled per call, consulted
+  LIVE, process untouched, reversible. `/mcp remove` is a teardown:
+  close() escalates stdin-EOF → SIGTERM → SIGKILL, every
+  `mcp__server__*` unregisters, and any saved entry is forgotten.
+  Disabling is "stop asking this server"; removing is "this server was
+  never here".
+* **Failed connects roll back completely.** If registration dies
+  halfway through a server's toolset (say, a name collision), the
+  already-registered names unregister AND the session closes before the
+  error re-raises — otherwise you get zombie entries no command can
+  reach, because `tool_names` never learned them. The test pins it by
+  asserting the half-added tool is gone and `created[0].closed`.
+* **Membership changes rebuild the selection catalog**, but the
+  rebuild must not silently revoke operator choices:
+  `enable_selection()` re-runs over the new registry while the old
+  `must_include` pins are copied onto the fresh catalog. A server added
+  at runtime therefore shows up under exactly the same pinning policy
+  as one wired at startup.
+* **Remembering is opt-in per server, asked each time.** The web form
+  has a checked-by-default checkbox; the REPL follows its success
+  message with the y/N prompt. Yes → `.akshara/mcp.json` in the working
+  directory (same building-block shape as `--mcp-config`, upserted with
+  an atomic tmp+rename); future launches auto-reconnect those servers
+  after flag configs, skipping any name already connected. Removal
+  ALWAYS forgets — "gone-gone" beats a surprise resurrection.
+* **A corrupt remembered file is loud.** Silent loss of an operator's
+  hand-written config is worse than a refused launch; `load_remembered`
+  raises rather than shrugging.
+
 ## Security: an integration standard, not a security boundary
 
 The chapter's loudest lesson, and the reason our structural choices

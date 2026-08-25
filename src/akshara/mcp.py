@@ -118,6 +118,43 @@ class MCPToolInfo:
     read_only_hint: bool = False
 
 
+def _configs_from_servers_dict(servers: Any, source: str) -> list[MCPServerConfig]:
+    """Shared validation for every way a servers-dict arrives: a
+    --mcp-config file, pasted panel JSON, the remembered-sessions file.
+    ``source`` names the origin in error messages."""
+    if not isinstance(servers, dict):
+        raise MCPError(
+            f"{source} must have a 'servers' object mapping "
+            "name -> {command,args,env} (stdio) or {url} (http)"
+        )
+    configs: list[MCPServerConfig] = []
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            raise MCPError(f"{source}: server {name!r} must be an object")
+        command = spec.get("command")
+        url = spec.get("url")
+        if command is None and url is None:
+            raise MCPError(
+                f"{source}: server {name!r} needs a string "
+                "'command' (stdio) or 'url' (http)"
+            )
+        if command is not None and not isinstance(command, str):
+            raise MCPError(f"{source}: server {name!r} 'command' must be "
+                           "a string")
+        if url is not None and not isinstance(url, str):
+            raise MCPError(f"{source}: server {name!r} 'url' must be a string")
+        args = spec.get("args", [])
+        env = spec.get("env")
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise MCPError(f"{source}: server {name!r} 'args' must be strings")
+        configs.append(MCPServerConfig(
+            name=name, command=command, args=args,
+            env={str(k): str(v) for k, v in env.items()} if env else None,
+            url=url,
+        ))
+    return configs
+
+
 def load_mcp_configs(path: str | Path) -> list[MCPServerConfig]:
     """Parse an mcp config file: ``{"servers": {"name": {command,args,env}}}``."""
     path = Path(path)
@@ -127,41 +164,18 @@ def load_mcp_configs(path: str | Path) -> list[MCPServerConfig]:
         raise MCPError(f"mcp config not found: {path}") from None
     except json.JSONDecodeError as exc:
         raise MCPError(f"mcp config {path} is not valid JSON: {exc}") from None
-    servers = raw.get("servers")
-    if not isinstance(servers, dict):
-        raise MCPError(
-            f"mcp config {path} must have a 'servers' object mapping "
-            "name -> {command,args,env} (stdio) or {url} (http)"
-        )
-    configs: list[MCPServerConfig] = []
-    for name, spec in servers.items():
-        if not isinstance(spec, dict):
-            raise MCPError(f"mcp config {path}: server {name!r} must be an object")
-        command = spec.get("command")
-        url = spec.get("url")
-        if command is None and url is None:
-            raise MCPError(
-                f"mcp config {path}: server {name!r} needs a string "
-                "'command' (stdio) or 'url' (http)"
-            )
-        if command is not None and not isinstance(command, str):
-            raise MCPError(
-                f"mcp config {path}: server {name!r} 'command' must be a string"
-            )
-        if url is not None and not isinstance(url, str):
-            raise MCPError(
-                f"mcp config {path}: server {name!r} 'url' must be a string"
-            )
-        args = spec.get("args", [])
-        env = spec.get("env")
-        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-            raise MCPError(f"mcp config {path}: server {name!r} 'args' must be strings")
-        configs.append(MCPServerConfig(
-            name=name, command=command, args=args,
-            env={str(k): str(v) for k, v in env.items()} if env else None,
-            url=url,
-        ))
-    return configs
+    return _configs_from_servers_dict(raw.get("servers"),
+                                      f"mcp config {path}")
+
+
+def parse_mcp_text(text: str) -> list[MCPServerConfig]:
+    """The web panel's paste-JSON mode: identical syntax to a config
+    file, arriving as a string instead of a path."""
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise MCPError(f"pasted config is not valid JSON: {exc}") from None
+    return _configs_from_servers_dict(raw.get("servers"), "pasted config")
 
 
 def _require_supported_version(negotiated: str, server_name: str) -> str:
@@ -293,6 +307,11 @@ class MCPSession:
                 proc.kill()
         if self._reader is not None:
             self._reader.join(timeout=1)
+
+    def healthy(self) -> bool:
+        """Cheap liveness probe for status displays: the child process
+        exists and has not exited. Never does protocol IO."""
+        return self._proc is not None and self._proc.poll() is None
 
     # ---- public protocol operations ----------------------------------------
 
@@ -450,6 +469,7 @@ class MCPHttpSession:
         self.protocol_version: str | None = None
         self.server_info: dict[str, Any] = {}
         self._session_id: str | None = None
+        self._closed = False
         self._ids = count(1)
         self._client = httpx.Client(timeout=timeout, transport=transport)
 
@@ -480,6 +500,13 @@ class MCPHttpSession:
             except httpx.TransportError:
                 pass  # best effort by definition
         self._client.close()
+        self._closed = True
+
+    def healthy(self) -> bool:
+        """Same contract as MCPSession.healthy: cheap, no protocol IO.
+        An HTTP session has no process to poll, so 'closed by us' is the
+        only state we can honestly report on."""
+        return not self._closed
 
     # ---- protocol operations (same surface as MCPSession) ------------------
 
@@ -653,3 +680,212 @@ class MCPToolWrapper(Tool):
             # can read and retry differently
             raise ToolError(text or "mcp tool reported failure")
         return text
+
+
+# ---------------------------------------------------------------------------
+# Remembered servers + the runtime manager (add/remove mid-session)
+# ---------------------------------------------------------------------------
+
+
+def remembered_path(cwd: Path | None = None) -> Path:
+    """Where mid-session-added servers persist across launches."""
+    return (cwd or Path.cwd()) / ".akshara" / "mcp.json"
+
+
+def load_remembered(path: Path) -> list[MCPServerConfig]:
+    """Servers saved by earlier sessions' 'remember' checkboxes. Missing
+    file is the normal first-run case -> empty list; a CORRUPT file raises
+    MCPError -- silent data loss would be worse than a loud startup."""
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise MCPError(f"remembered mcp config {path} is not valid JSON: "
+                       f"{exc}") from None
+    return _configs_from_servers_dict(
+        raw.get("servers") if isinstance(raw, dict) else None,
+        f"remembered mcp config {path}")
+
+
+def remember_server(config: MCPServerConfig, path: Path) -> None:
+    """Upsert one server into the remembered file (atomic tmp+rename --
+    the same write discipline as memory.json)."""
+    data: dict[str, Any] = {"servers": {}}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text())
+            if isinstance(loaded, dict) and isinstance(loaded.get("servers"),
+                                                       dict):
+                data = loaded
+        except json.JSONDecodeError:
+            pass  # corrupt file gets replaced rather than blocking adds
+    spec: dict[str, Any] = {}
+    if config.command is not None:
+        spec["command"] = config.command
+        if config.args:
+            spec["args"] = list(config.args)
+    if config.url is not None:
+        spec["url"] = config.url
+    if config.env:
+        spec["env"] = dict(config.env)
+    data["servers"][config.name] = spec
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def forget_server(name: str, path: Path) -> bool:
+    """Drop one server's entry. False means it was never remembered."""
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return False
+    servers = data.get("servers") if isinstance(data, dict) else None
+    if not isinstance(servers, dict) or name not in servers:
+        return False
+    del servers[name]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)
+    return True
+
+
+class MCPManager:
+    """Owns the LIVE MCP sessions of one registry -- what makes servers a
+    runtime-manageable resource instead of startup-only wiring.
+
+    Startup still works exactly as before (--mcp-config files); the
+    manager just becomes that loop's bookkeeper so the web panel and the
+    REPL can add, remove, and soft-toggle servers later:
+
+    * ``connect`` registers ``mcp__<server>__<tool>`` wrappers and, when
+      the agent runs per-turn selection, rebuilds the catalog so new
+      tools are reachable without a restart;
+    * ``disconnect`` closes the transport (stdio child reaped by close())
+      and unregisters exactly that server's tools;
+    * ``set_enabled`` is the SOFT switch: tools stay registered, calls
+      fail as readable data until re-enabled -- identical semantics to
+      the /api/tools toggles, one server at a time.
+    """
+
+    def __init__(self, registry: Any, *, agent: Any = None,
+                 memory_path: Path | None = None,
+                 connector: Any = connect_mcp) -> None:
+        self.registry = registry
+        self.agent = agent  # optional; only used to refresh the catalog
+        self.memory_path = memory_path  # None = this session never persists
+        self._connector = connector  # injectable: tests fake the transport
+        self.sessions: dict[str, Any] = {}
+        self.tool_names: dict[str, list[str]] = {}
+        self.pinned: set[str] = set()  # names with an entry in memory_path
+
+    # ---- lifecycle ---------------------------------------------------------
+
+    def connect(self, config: MCPServerConfig, *, timeout: float = 30.0,
+                remember: bool = False) -> list[str]:
+        """Start one server and register its tools. Connection failures
+        raise MCPError AFTER cleanup -- half-registered sessions must not
+        linger."""
+        if config.name in self.sessions:
+            raise MCPError(f"mcp server {config.name!r} is already connected")
+        session, tools = self._connector(config, timeout=timeout)
+        names: list[str] = []
+        try:
+            for tool in tools:
+                self.registry.register(tool)  # dup names raise ValueError
+                names.append(tool.name)
+        except Exception:
+            # roll back EVERYTHING from this attempt -- a half-registered
+            # server whose transport is closed must not leave zombie
+            # entries no /mcp command can ever remove again
+            for done in names:
+                self.registry.unregister(done)
+            session.close()
+            raise
+        self.sessions[config.name] = session
+        self.tool_names[config.name] = names
+        if remember and self.memory_path is not None:
+            remember_server(config, self.memory_path)
+        if self.memory_path is not None and \
+                any(c.name == config.name for c in load_remembered(
+                    self.memory_path)):
+            self.pinned.add(config.name)
+        self._refresh_catalog()
+        return names
+
+    def disconnect(self, name: str) -> int:
+        """Close one server's connection and pull its tools. Also drops
+        its remembered entry -- removing a server you had saved means
+        gone-gone, not 'until next launch'. Returns the tool count."""
+        session = self.sessions.pop(name, None)
+        if session is None:
+            raise MCPError(f"no mcp server named {name!r} is connected")
+        session.close()
+        removed = self.tool_names.pop(name, [])
+        for tool_name in removed:
+            self.registry.unregister(tool_name)
+        self.pinned.discard(name)
+        if self.memory_path is not None:
+            forget_server(name, self.memory_path)
+        self._refresh_catalog()
+        return len(removed)
+
+    def set_enabled(self, name: str, enabled: bool) -> int:
+        """Soft toggle every tool of one server (process stays warm).
+        Unknown servers are an MCPError; callers translate to their own
+        error shapes (REPL prints, web 404s)."""
+        names = self.tool_names.get(name)
+        if names is None:
+            raise MCPError(f"no mcp server named {name!r} is connected")
+        for tool_name in names:
+            (self.registry.enable if enabled else self.registry.disable)(
+                tool_name)
+        return len(names)
+
+    def shutdown(self) -> None:
+        """Close everything; main()'s finally calls this on EVERY exit."""
+        for name in list(self.sessions):
+            try:
+                self.disconnect(name)
+            except Exception:
+                pass  # best effort at interpreter teardown
+
+    # ---- status ------------------------------------------------------------
+
+    def servers(self) -> list[dict[str, Any]]:
+        """Status snapshot for listings and panels."""
+        out: list[dict[str, Any]] = []
+        for name in sorted(self.sessions):
+            cfg = self.sessions[name].config
+            names = self.tool_names.get(name, [])
+            target = cfg.url if cfg.url else " ".join(
+                [cfg.command or "", *cfg.args]).strip()
+            out.append({
+                "name": name,
+                "transport": "http" if cfg.url else "stdio",
+                "target": target,
+                "healthy": self.sessions[name].healthy(),
+                "tools": len(names),
+                "disabled": sum(1 for n in names
+                                if self.registry.is_disabled(n)),
+                "remembered": name in self.pinned,
+            })
+        return out
+
+    def _refresh_catalog(self) -> None:
+        """Rebuild the selection catalog after membership changes, keeping
+        whatever pin set it was built with. No-op without selection."""
+        if self.agent is None or getattr(self.agent, "tool_catalog",
+                                         None) is None:
+            return
+        from akshara.tools.selector import enable_selection
+
+        pins = self.agent.tool_catalog.must_include
+        catalog, _ = enable_selection(self.registry)
+        catalog.must_include = pins
+        self.agent.tool_catalog = catalog

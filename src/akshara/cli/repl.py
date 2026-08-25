@@ -46,6 +46,11 @@ HELP = """[bold]commands[/bold]
   /tools             list registered tools and their schemas ([off] = pulled)
   /tools off|on NAME pull or restore tools MID-SESSION (globs ok:
                      browser_*, mcp__slack__*); applies to the very next call
+  /mcp               list connected mcp servers
+  /mcp add ...       connect a server MID-SESSION: /mcp add NAME URL, or
+                     /mcp add NAME COMMAND [ARGS...] (asks whether to save)
+  /mcp off|on NAME   soft-switch one server's whole toolset (stays warm)
+  /mcp remove NAME   disconnect it and pull its tools (forgets saved entry)
   /build SPEC        build a project from SPEC in a scratch workspace,
                      then independently verify it (BUILD GREEN/RED)
   /history           dump the conversation so far
@@ -158,10 +163,14 @@ class Repl:
     def __init__(self, agent: Agent, console: Console,
                  store: SessionStore | None = None,
                  input_fn: Callable[[str], str] | None = None,
-                 sandbox: ToolSandbox | None = None) -> None:
+                 sandbox: ToolSandbox | None = None,
+                 mcp: Any | None = None) -> None:
         self.agent = agent
         self.console = console
         self.store = store
+        # MCPManager when the entrypoint wired one (None in tests/embedders
+        # -- /mcp then reports instead of crashing).
+        self.mcp = mcp
         # Injectable so tests can feed lines without a real terminal.
         self._input = input_fn or input
         self.renderer = Renderer(console)
@@ -303,6 +312,8 @@ class Repl:
                     )
             case "tools":
                 self._tools_command(arg)
+            case "mcp":
+                self._mcp_command(arg)
             case "build":
                 if not arg:
                     self.console.print("[red]/build needs a spec: "
@@ -416,6 +427,99 @@ class Repl:
                 f"[bold]{spec.name}[/bold]{off} — {spec.description}"
             )
             self.console.print_json(json.dumps(spec.parameters))
+
+    # ---- mcp servers -----------------------------------------------------------
+
+    def _mcp_command(self, arg: str) -> None:
+        """/mcp lists connected servers; add|remove manage connections
+        MID-SESSION; off|on is the soft switch (whole toolset, process
+        stays warm). The terminal twin of the panel's servers section --
+        same MCPManager underneath, so both stay in step."""
+        if self.mcp is None:
+            self.console.print("[red]this session has no mcp manager -- "
+                               "start via akshara (not the library)[/red]")
+            return
+
+        parts = arg.split()
+        verb = parts[0] if parts else ""
+
+        if verb in ("off", "on"):
+            if len(parts) != 2:
+                self.console.print(f"[red]usage: /mcp {verb} NAME[/red]")
+                return
+            try:
+                count = self.mcp.set_enabled(parts[1], verb == "on")
+            except Exception as exc:
+                self.console.print(f"[red]{exc}[/red]")
+                return
+            state = "re-enabled" if verb == "on" else "disabled"
+            tail = ("" if verb == "on" else " -- its calls now fail as "
+                    "data until /mcp on")
+            self.console.print(f"[green]{state} {count} tool(s) on "
+                               f"{parts[1]}{tail}[/green]")
+        elif verb == "remove":
+            if len(parts) != 2:
+                self.console.print("[red]usage: /mcp remove NAME[/red]")
+                return
+            try:
+                removed = self.mcp.disconnect(parts[1])
+            except Exception as exc:
+                self.console.print(f"[red]{exc}[/red]")
+                return
+            # disconnect() also drops any saved entry; say so plainly.
+            self.console.print(f"[green]disconnected '{parts[1]}' -- "
+                               f"{removed} tool(s) removed, saved entry "
+                               "forgotten[/green]")
+        elif verb == "add":
+            self._mcp_add_command(parts[1:])
+        else:
+            if not self.mcp.sessions:
+                self.console.print("[dim]no mcp servers connected -- "
+                                   "/mcp add NAME URL (or COMMAND) to "
+                                   "connect one[/dim]")
+                return
+            for info in self.mcp.servers():
+                health = "" if info["healthy"] else \
+                    r" [red]\[down][/red]"  # \[ escapes rich markup
+                remembered = " · saved" if info["remembered"] else ""
+                self.console.print(
+                    f"[bold]{info['name']}[/bold] [dim]({info['transport']})[/"
+                    f"dim]{health}{remembered} — {info['target']} — "
+                    f"{info['tools']} tool(s)"
+                    + (f", {info['disabled']} off" if info["disabled"] else ""))
+
+    def _mcp_add_command(self, rest: list[str]) -> None:
+        """/mcp add NAME URL   (http)
+        /mcp add NAME CMD [ARGS...]  (stdio). After connecting, asks
+        whether to remember the server for future launches -- the same
+        question the web form's checkbox answers."""
+        from akshara.mcp import MCPServerConfig, MCPError, remembered_path
+
+        if len(rest) < 2:
+            self.console.print("[red]usage: /mcp add NAME URL --or-- "
+                               "/mcp add NAME COMMAND [ARGS...][/red]")
+            return
+        name, target, extra = rest[0], rest[1], rest[2:]
+        cfg = (MCPServerConfig(name=name, url=target) if "://" in target
+               else MCPServerConfig(name=name, command=target, args=extra))
+        with self.console.status(f"[dim]connecting {name}…[/dim]"):
+            try:
+                names = self.mcp.connect(cfg)
+            except (MCPError, ValueError) as exc:
+                self.console.print(f"[red]could not connect {name!r}: "
+                                   f"{exc}[/red]")
+                return
+        self.console.print(f"[green]connected {name}: {len(names)} "
+                           f"tool(s)[/green] [dim]({', '.join(names)})[/dim]")
+        answer = Prompt.ask("remember this server for future launches?",
+                            choices=["y", "N"], default="N").strip().lower()
+        if answer == "y":
+            from akshara.mcp import remember_server
+            path = self.mcp.memory_path or remembered_path()
+            remember_server(cfg, path)
+            self.mcp.pinned.add(name)
+            self.console.print(f"[dim]saved to {path} -- reconnects on "
+                               "future launches[/dim]")
 
     # ---- permission mode ------------------------------------------------------
 

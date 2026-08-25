@@ -414,6 +414,14 @@ Configured servers' tools appear in the toolbox named like
 `mcp__tiny__add` — the model asks for them exactly like built-ins,
 permissions apply identically, nothing downstream changes.
 
+And the plug is hot-swappable: you don't restart to add hardware.
+Mid-conversation you can list what's connected (`/mcp`), attach a new
+server (`/mcp add tiny python srv.py`), switch a whole server's tools
+off and on (`/mcp off tiny`, `/mcp on tiny`) or detach it entirely
+(`/mcp remove tiny`). The browser UI's panel has the same switches
+plus an "add" button, and it can remember servers so they reconnect by
+themselves next launch.
+
 ## 15 · Many conversations, one engine
 
 Everything above runs one conversation at a time. But batch jobs and
