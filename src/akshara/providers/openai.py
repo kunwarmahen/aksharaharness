@@ -402,9 +402,21 @@ def _encode_message(message: Message) -> list[dict[str, Any]]:
         out.append(entry)
         return out
 
-    # user role: text becomes a user message; each ToolResult becomes
-    # its own role:"tool" message. No is_error flag exists on this wire
-    # -- the convention is to mark it in the content text.
+    # user role: each ToolResult becomes its own role:"tool" message,
+    # and they go FIRST -- this wire requires tool results to directly
+    # follow the assistant turn that made the calls. Any remaining
+    # text/images then ride ONE trailing user message; that trailing
+    # position is how a tool-produced image (read_image) reaches the
+    # model at all, since role:"tool" cannot carry an image on this wire.
+    # No is_error flag exists either -- the convention is to mark it in
+    # the content text.
+    for block in message.content:
+        match block:
+            case ToolResult(tool_call_id=cid, content=out_text, is_error=is_err):
+                content = f"ERROR: {out_text}" if is_err else out_text
+                out.append(
+                    {"role": "tool", "tool_call_id": cid, "content": content}
+                )
     if any(isinstance(b, ImageBlock) for b in message.content):
         # Multimodal message: chat-completions carries text+images as an
         # ordered ARRAY of typed parts (images as data: URLs). Only used
@@ -425,13 +437,6 @@ def _encode_message(message: Message) -> list[dict[str, Any]]:
         text = "".join(b.text for b in message.content if isinstance(b, TextBlock))
         if text:
             out.append({"role": "user", "content": text})
-    for block in message.content:
-        match block:
-            case ToolResult(tool_call_id=cid, content=out_text, is_error=is_err):
-                content = f"ERROR: {out_text}" if is_err else out_text
-                out.append(
-                    {"role": "tool", "tool_call_id": cid, "content": content}
-                )
     return out
 
 

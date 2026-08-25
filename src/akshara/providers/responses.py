@@ -394,9 +394,21 @@ def _encode_message(message: Message) -> list[dict[str, Any]]:
             })
         return out
 
-    # user role: text/images become ONE user message item (typed parts);
-    # each ToolResult becomes its own function_call_output item. No
-    # is_error flag exists here either -- mark it in the content text.
+    # user role: each ToolResult becomes its own function_call_output
+    # item FIRST (they must directly follow the function_call items),
+    # then any remaining text/images ride ONE trailing user message --
+    # the same trailing position that lets a tool-produced image reach
+    # the model on this wire. No is_error flag exists here either --
+    # mark it in the content text.
+    for block in message.content:
+        match block:
+            case ToolResult(tool_call_id=cid, content=result_text, is_error=is_err):
+                content = f"ERROR: {result_text}" if is_err else result_text
+                out.append({
+                    "type": "function_call_output",
+                    "call_id": cid,
+                    "output": content,
+                })
     parts: list[dict[str, Any]] = []
     for block in message.content:
         match block:
@@ -407,15 +419,6 @@ def _encode_message(message: Message) -> list[dict[str, Any]]:
                               "image_url": f"data:{mime};base64,{b64}"})
     if parts:
         out.append({"type": "message", "role": "user", "content": parts})
-    for block in message.content:
-        match block:
-            case ToolResult(tool_call_id=cid, content=result_text, is_error=is_err):
-                content = f"ERROR: {result_text}" if is_err else result_text
-                out.append({
-                    "type": "function_call_output",
-                    "call_id": cid,
-                    "output": content,
-                })
     return out
 
 

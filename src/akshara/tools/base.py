@@ -24,7 +24,7 @@ from typing import Any, ClassVar
 
 from akshara.errors import ToolError
 from akshara.leases import LeaseManager
-from akshara.types import ToolSpec
+from akshara.types import ImageBlock, ToolSpec
 
 
 @dataclass(slots=True)
@@ -41,6 +41,23 @@ class ToolContext:
 
     cwd: Path
     leases: LeaseManager = field(default_factory=LeaseManager)
+
+
+@dataclass(slots=True)
+class ToolOutput:
+    """A tool result that text alone can't carry: text PLUS images.
+
+    Every tool returns a str and always may again -- but read_image has
+    pixels to deliver, so its run() returns one of these instead. The
+    loop splits it: ``text`` becomes the ToolResult content (truncated,
+    displayed, persisted exactly like any other result) and ``images``
+    are hoisted onto history right after it. Returning plain str from a
+    tool stays the norm; this exists so ONE capability doesn't drag
+    every tool through a richer contract.
+    """
+
+    text: str
+    images: list[ImageBlock] = field(default_factory=list)
 
 
 class Tool(ABC):
@@ -62,8 +79,9 @@ class Tool(ABC):
         previews resolve paths exactly like execution will."""
 
     @abstractmethod
-    def run(self, args: dict[str, Any], ctx: ToolContext) -> str:
-        """Execute; return output as a string."""
+    def run(self, args: dict[str, Any], ctx: ToolContext) -> "str | ToolOutput":
+        """Execute; return output as a string -- or a ToolOutput when the
+        result carries images alongside the text."""
 
     async def arun(self, args: dict[str, Any], ctx: ToolContext) -> str:
         """Async skin over run(): the ONE method the async loop calls.

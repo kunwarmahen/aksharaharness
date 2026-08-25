@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from akshara.types import (
+    ImageBlock,
     Message,
     RedactedThinkingBlock,
     TextBlock,
@@ -164,6 +165,12 @@ def _dump_message(message: Message) -> dict:
                 # Same byte-exact contract as signatures: ciphertext the
                 # provider validates on the next request.
                 content.append({"kind": "redacted_thinking", "data": payload})
+            case ImageBlock(media_type=mime, data=b64):
+                # User attachments AND tool-produced images (read_image)
+                # both round-trip: base64 is the payload, so this is
+                # byte-exact by construction -- no re-encode, no loss.
+                content.append({"kind": "image", "media_type": mime,
+                                "data": b64})
     return {"role": message.role, "content": content}
 
 
@@ -185,6 +192,8 @@ def _load_message(raw: dict) -> Message:
                                             signature=item.get("signature", "")))
             case "redacted_thinking":
                 blocks.append(RedactedThinkingBlock(item.get("data", "")))
+            case "image":
+                blocks.append(ImageBlock(item["media_type"], item["data"]))
             case unknown:
                 raise ValueError(f"cannot restore block kind {unknown!r} "
                                  f"(payload format newer than this code?)")

@@ -149,6 +149,31 @@ time, never mid-conversation; both adapters carry the resulting
 `ImageBlock` in their own dialect, and compaction bills images by
 decoded size.
 
+Self-reliance tools — the difference between an agent that answers
+and one that finishes ([notes/23](notes/23-glob.md)–
+[27](notes/27-read-image.md)):
+
+- **glob** finds files by NAME (`**` recursion, newest-first) without
+  a permission-gated bash call; **grep** still searches contents.
+- **todo_write / todo_read** keep live plan state (`.akshara/todos.json`,
+  replace-whole-list semantics) — distinct from write_note's durable
+  facts, and cheap grounding that keeps local models on script through
+  long missions.
+- **web_fetch URL** pulls one http(s) address as readable text (HTML
+  stripped to prose, JSON pretty-printed, 2 MB download cap). Fetch,
+  not search — and deliberately NOT read_only: it is the one built-in
+  that reaches the network from outside every sandbox wall, so it
+  gates like bash and a human approves the address.
+- **bash_start / bash_poll / bash_kill** run commands that outlive one
+  tool call — dev servers, watchers, long builds — with output teeing
+  to `.akshara/jobs/<id>.log`. Jobs always run as plain env-scrubbed
+  subprocesses (they outlive any sandbox), so start/kill gate even when
+  confined bash doesn't.
+- **read_image PATH** lets the model LOOK at a png/jpeg/gif/webp in
+  its sandbox — screenshots, diagrams, charts it just generated. The
+  image rides history right after the tool result on all three wire
+  dialects ([notes/27](notes/27-read-image.md)).
+
 REPL commands: `/help /model /provider /tools /history /usage /save /load
 /compact /clear /image /build /quit` (`//text` sends a literal leading slash; a
 trailing `\` continues the same message on the next line — paste-friendly
@@ -289,17 +314,31 @@ src/akshara/
 │   │                 [DONE] ([notes/19](notes/19-responses-api.md))
 │   └── ollama.py     local models = OpenAI dialect profile (no auth, 8k window)
 ├── tools/
-│   ├── base.py     Tool ABC (schema + summary + run), ToolRegistry, arg validators
+│   ├── base.py     Tool ABC (schema + summary + run -> str | ToolOutput),
+│   │               ToolRegistry, arg validators
 │   ├── fs.py       read_file / list_dir / write_file / edit_file (+ path sandbox)
+│   ├── glob.py     glob — find files by NAME ('**' recursion, newest-first,
+│   │               grep's skip rules); read-only so it never gates ([notes/23](notes/23-glob.md))
 │   ├── shell.py    bash — delegates to any ToolSandbox (default: legacy
 │   │               subprocess semantics; timeout -> killpg -> salvage)
+│   ├── background.py bash_start / bash_poll / bash_kill: jobs that outlive
+│   │               one tool call, log teeing to .akshara/jobs/, process-group
+│   │               kill; plain subprocesses by design -> always gate ([notes/26](notes/26-background-bash.md))
+│   ├── web_fetch.py fetch ONE url as readable text (stdlib HTML stripping,
+│   │               2 MB cap, head-tail clip) — the only built-in that reaches
+│   │               the network, hence gated like bash ([notes/25](notes/25-web-fetch.md))
+│   ├── read_image.py the agent looking at a picture BY ITSELF: returns a
+│   │               ToolOutput; the loop hoists images onto history after the
+│   │               result ([notes/27](notes/27-read-image.md))
 │   ├── selector.py dynamic tool loading: BM25 ToolCatalog over name+
 │   │               description, transcript-derived query, pinned
 │   │               list_available_tools discovery hatch ([notes/17](notes/17-tool-selection.md))
 │   ├── search.py   grep — ripgrep subprocess when available, pure-python
 │   │               walker fallback (identical output contract)
 │   ├── memory.py   scratchpad: write_note / recall_notes — JSON store under
-│                   .akshara/, ranked substring retrieval, survives restarts
+│   │               .akshara/, ranked substring retrieval, survives restarts
+│   ├── todo.py     live plan state vs memory's durable facts: todo_write /
+│   │               todo_read — replace-whole-list semantics ([notes/24](notes/24-todo-lists.md))
 │   └── ask_user.py pause-and-ask-the-human tool: UserChannel protocol
 │                   (terminal stdin, browser websocket, or None = headless
 │                   fails the turn) — the model's escape hatch from guessing
@@ -357,6 +396,12 @@ Design rules worth stealing:
   OUTPUT (reversible, calls stay verbatim); only if still in the red
   zone does an LLM summarize the middle — goal message intact, every
   tool call accounted for ([notes/07](notes/07-reliability-and-scale.md)).
+* **Tool results are strings — until pixels.** A tool may return a
+  `ToolOutput` (text + images); the loop splits it and HOISTS the
+  images onto history after the results, because two of the three wire
+  dialects cannot carry an image inside a tool payload at all. One
+  transcript shape everywhere; adapters never see the field
+  ([notes/27](notes/27-read-image.md)).
 * **Sub-agents: constrained in code, not prompts.** One level deep
   (`spawn_subagent` rejected from child catalogs), bounded (per-session
   budget + mandatory justification), compact results (conclusions +
@@ -399,7 +444,7 @@ end ([notes/03](notes/03-sse-and-collect.md)).
 ## Run & test
 
 ```bash
-uv run pytest -q                 # full offline suite: 490 tests, NO network, NO key
+uv run pytest -q                 # full offline suite: 564 tests, NO network, NO key
 
 # everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
 uv run python examples/one_shot.py "Why is the sky blue?"
@@ -428,17 +473,21 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 490 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 564 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The
 browser UI runs fully offline as well: FastAPI's test client drives the
-real routes against scripted turns.
+real routes against scripted turns — and web_fetch does the same trick
+with a mocked transport behind its real request path.
 
 Everything above has also been exercised against real providers —
 all three dialects via OpenRouter (cloud models) plus local Ollama
 for end-to-end runs of sandboxing, build mode, MCP, sub-agents,
-evals, caching, hooks, vision, `ask_user`, and the web UI. The
+evals, caching, hooks, vision, `ask_user`, the web UI, and the
+self-reliance set (background jobs + a localhost web_fetch + todo
+tracking on `qwen3.8`; `read_image` vision on `gemma4:12b` — see the
+receipts closing notes/24–27). The
 `examples/` demos rerun most of it on demand. Live testing shook out
 four real bugs along the way, all fixed and now regression-tested:
 gateway `null` token counters poisoning `Usage.add()`, an orphaned
