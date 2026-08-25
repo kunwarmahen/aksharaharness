@@ -57,6 +57,30 @@ uv run akshara "summarize README.md"                  # one-shot prompt, then ex
 uv run akshara --image photo.png "what's in this picture?"   # vision one-shot
 ```
 
+### One-command starts
+
+`start.sh` wraps the common setups so you don't have to remember flags.
+Run it bare for a numbered menu, or name what you want:
+
+```bash
+./start.sh                    # menu — pick by number
+./start.sh local              # free & private: Ollama, no key needed
+./start.sh cloud              # uses whichever API key your .env has
+./start.sh web                # chat in your browser (foreground)
+./start.sh local-web          # Ollama + browser UI
+
+./start.sh web-start          # browser UI in the BACKGROUND (web-start
+./start.sh web-stop           #   local' pins Ollama) — plus stop,
+./start.sh web-status         #   status, restart and web-logs to
+./start.sh web-logs           #   follow its output
+```
+
+Everything after the preset passes straight through (`./start.sh local
+--yolo`, `./start.sh cloud --resume`, `./start.sh web-start --port 9000`).
+Keys, models and URLs still come from `.env`; the script only adds the
+flags that make each setup different. It needs `curl` for its health
+checks — nothing else beyond bash and uv.
+
 Builder mode ([notes/18](notes/18-builder-mode.md)): spec → files →
 acceptance checks re-run INDEPENDENTLY (never trusting the model's
 word); a red verification is fed back into the same conversation for a
@@ -523,6 +547,7 @@ uv run python examples/agent_loop_demo.py --deny-all # denial-as-data demo
 uv run python examples/async_demo.py                 # 4 conversations, seq vs concurrent
 uv run python examples/builder_demo.py               # agent BUILDS a project, verified
 uv run akshara                                       # REPL
+./start.sh                                           # same thing, via menus/presets (see "One-command starts")
 uv run akshara --provider ollama --web               # REPL in your browser (free, local)
 uv run akshara --yolo "run: echo hi"                 # one-shot, no prompts
 uv run akshara --cache                               # prompt caching on
