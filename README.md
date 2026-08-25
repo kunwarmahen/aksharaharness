@@ -220,7 +220,12 @@ and one that finishes ([notes/23](notes/23-glob.md)–
   clicks/fills take a ref and return the refreshed page. Same egress
   rule as web_fetch — all four gate. Installing the extra IS the
   opt-in: the four register only when playwright is present
-  ([notes/28](notes/28-browser-tools.md)).
+  ([notes/28](notes/28-browser-tools.md)). Logins persist too: set
+  `AKSHARA_BROWSER_PROFILE=~/.local/state/akshara/browser-profile`
+  and run `uv run akshara --browse-login <url>` once — a visible
+  window opens, you sign in yourself (2FA included), close it — and
+  every later session starts signed-in. Cookies never enter model
+  context: the profile holds them on disk, outside the conversation.
 
 REPL commands: `/help /model /provider /tools /history /usage /save /load
 /compact /clear /image /build /quit` (`//text` sends a literal leading slash; a
@@ -388,8 +393,10 @@ src/akshara/
 │   ├── browser.py  browser_open/click/fill/close — a real headless Chromium
 │   │               behind the [browse] extra: JS-rendered pages come back as
 │   │               text + numbered element refs; registers only when playwright
-│   │               imports, so the tool count never moves uninvited
-│   │               ([notes/28](notes/28-browser-tools.md))
+│   │               imports, so the tool count never moves uninvited; optional
+│   │               $AKSHARA_BROWSER_PROFILE keeps logins between sessions
+│   │               (--browse-login = headed one-time setup) — cookies stay on
+│   │               disk, never in model context ([notes/28](notes/28-browser-tools.md))
 │   ├── selector.py dynamic tool loading: BM25 ToolCatalog over name+
 │   │               description, transcript-derived query, core pins +
 │   │               list_available_tools discovery hatch ([notes/17](notes/17-tool-selection.md))
@@ -533,7 +540,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 681 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 699 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The

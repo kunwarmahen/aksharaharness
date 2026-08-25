@@ -19,6 +19,7 @@ from akshara import config
 from akshara.errors import ConfigError
 from akshara.config import (
     _load_dotenv,
+    browser_profile,
     default_context_window,
     default_tool_select,
     disabled_tool_patterns,
@@ -143,3 +144,31 @@ class TestDisabledToolsEnv:
                            " web_fetch , browser_* ,, mcp__slack__* ,")
         assert disabled_tool_patterns() == [
             "web_fetch", "browser_*", "mcp__slack__*"]
+
+
+class TestBrowserProfileEnv:
+    """$AKSHARA_BROWSER_PROFILE: where the browser family keeps logins.
+    Unset/blank => None (fresh sessions, nothing persists -- the safe
+    default for what is ultimately a plaintext credential store)."""
+
+    def test_unset_is_none(self, monkeypatch):
+        monkeypatch.delenv("AKSHARA_BROWSER_PROFILE", raising=False)
+        assert browser_profile() is None
+
+    def test_blank_template_residue_is_none(self, monkeypatch):
+        # copying .env.example leaves ``AKSHARA_BROWSER_PROFILE=`` behind
+        monkeypatch.setenv("AKSHARA_BROWSER_PROFILE", "   ")
+        assert browser_profile() is None
+
+    def test_tilde_expands(self, monkeypatch):
+        monkeypatch.setenv("AKSHARA_BROWSER_PROFILE", "~/.state/prof")
+        assert browser_profile() == Path.home() / ".state" / "prof"
+
+    def test_relative_paths_anchor_to_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("AKSHARA_BROWSER_PROFILE", "prof")
+        assert browser_profile() == tmp_path / "prof"
+
+    def test_absolute_passes_through(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AKSHARA_BROWSER_PROFILE", str(tmp_path))
+        assert browser_profile() == tmp_path

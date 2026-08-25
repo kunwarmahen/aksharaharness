@@ -17,13 +17,14 @@ from akshara.cli.render import Renderer, SubagentTee
 from akshara.cli.repl import Repl, confirm_gate
 from akshara.config import (
     _load_dotenv,
+    browser_profile,
     default_context_window,
     default_model,
     default_tool_select,
     disabled_tool_patterns,
     load_settings,
 )
-from akshara.errors import ConfigError, ImageError, UserUnavailable
+from akshara.errors import ConfigError, ImageError, ToolError, UserUnavailable
 from akshara.images import load_image_block
 from akshara.mcp import (MCPError, MCPManager, load_mcp_configs,
                          load_remembered, remembered_path)
@@ -92,6 +93,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "re-verify the acceptance commands (unittest "
                              "gate). Exit 0 = build green, 1 = red. "
                              "Use --cwd to choose the workspace explicitly.")
+    parser.add_argument("--browse-login", metavar="URL", dest="browse_login",
+                        default=None,
+                        help="one-time LOGIN SETUP for the browser_* tools: "
+                             "opens a VISIBLE Chromium on the "
+                             "$AKSHARA_BROWSER_PROFILE directory (set it in "
+                             ".env first), you log in yourself -- 2FA and "
+                             "captchas included -- then close the window. "
+                             "Every later headless session on that profile "
+                             "starts logged-in. No model, no API key needed")
     parser.add_argument("--prompt", help="one-shot mode: run this prompt and exit")
     parser.add_argument("--image", action="append", default=[], metavar="PATH",
                         help="attach an image (png/jpeg/gif/webp, <=5 MB) to "
@@ -211,6 +221,41 @@ def _build_mode(args, provider_name: str, settings, model: str,
     return 0 if result.ok else 1
 
 
+def _browse_login(url: str, console: Console) -> int:
+    """--browse-login URL: headed one-time login on the persistent profile.
+
+    Deliberately provider-free -- no model, no API key, so this runs
+    BEFORE main()'s credential resolution. The human beats the login
+    wall by hand once; the profile keeps the session for every later
+    headless run ([notes/28](../notes/28-browser-tools.md)).
+    """
+    from akshara.tools.browser import run_login_session  # lazy: [browse] extra
+
+    profile = browser_profile()
+    if profile is None:
+        print("error: --browse-login needs somewhere to KEEP the login: put\n"
+              "  AKSHARA_BROWSER_PROFILE=~/.local/state/akshara/browser-profile"
+              "\nin .env first (see .env.example)", file=sys.stderr)
+        return 2
+    console.print(f"[bold]login setup[/bold] · profile {profile}\n"
+                  f"a visible Chromium is opening{f' at {url}' if url else ''} "
+                  "-- log in yourself (2FA and\ncaptchas are yours to beat), "
+                  "then CLOSE THE WINDOW. Everything you leave\nsigned-in "
+                  "here, the agent finds signed-in later.")
+    try:
+        run_login_session(profile, url)
+    except KeyboardInterrupt:
+        console.print("\n[yellow](cancelled -- whatever you logged into "
+                      "before now is already saved)[/yellow]")
+        return 130
+    except ToolError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    console.print("[green]profile saved[/green] -- future browser_* "
+                  "sessions start from these logins")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     console = Console()
@@ -219,6 +264,12 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --image needs a prompt to attach to (--prompt or a "
               "positional PROMPT); interactive image input is not "
               "supported yet", file=sys.stderr)
+        return 2
+    if args.browse_login is not None and (args.build or args.prompt
+                                          or args.prompt_positional
+                                          or args.web):
+        print("error: --browse-login is its own mode: drop --build/--prompt/"
+              "PROMPT/--web", file=sys.stderr)
         return 2
     if args.build and (args.prompt or args.prompt_positional):
         print("error: --build takes the spec itself; drop --prompt/PROMPT",
@@ -229,6 +280,12 @@ def main(argv: list[str] | None = None) -> int:
               "PROMPT (send messages from the browser instead)",
               file=sys.stderr)
         return 2
+
+    # Login setup never touches a model, so it must work without any API
+    # key -- dispatched before provider resolution on purpose.
+    if args.browse_login is not None:
+        _load_dotenv()  # the knob usually lives in .env
+        return _browse_login(args.browse_login, console)
 
     try:
         provider_name = args.provider or _guess_provider()
