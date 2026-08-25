@@ -113,10 +113,11 @@ uv run akshara --subagents "research X and report back"
 
 Browser UI ([notes/22](notes/22-web-ui.md)) — `--web` serves the same
 agent loop at `http://127.0.0.1:8321` (`--host`/`--port` to move it):
-streamed replies and thinking, tool cards, permission prompts with
-approve/deny/**edit**, image attachments, save/load/compact/model
-switches, and a Cancel button that mirrors Ctrl-C. Install the extra
-once: `uv sync --extra web`.
+streamed replies and thinking rendered as markdown (headings, tables,
+code blocks — by a ~150-line escape-first renderer, no library), tool
+cards, permission prompts with approve/deny/**edit**, image attachments,
+save/load/compact/model switches, and a Cancel button that mirrors
+Ctrl-C. Install the extra once: `uv sync --extra web`.
 
 ```bash
 uv run akshara --provider ollama --web      # local model + browser UI
@@ -398,7 +399,7 @@ end ([notes/03](notes/03-sse-and-collect.md)).
 ## Run & test
 
 ```bash
-uv run pytest -q                 # full offline suite: 480 tests, NO network, NO key
+uv run pytest -q                 # full offline suite: 490 tests, NO network, NO key
 
 # everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
 uv run python examples/one_shot.py "Why is the sky blue?"
@@ -427,7 +428,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 480 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 490 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The
