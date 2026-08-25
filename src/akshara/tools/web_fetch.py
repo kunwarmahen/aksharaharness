@@ -1,4 +1,5 @@
-"""web_fetch -- read one URL, as text. The harness's only road out.
+"""web_fetch -- read one URL, as text. The plain-HTTP road out of the
+sandbox; browser_* (when installed) is the JS-rendering road.
 
 Before this tool, the model's world ended at the sandbox edge: an
 error message from a dependency, an API reference, a changelog -- all
@@ -10,13 +11,13 @@ Scope decisions worth writing down:
 * FETCH ONLY, NO SEARCH. A search API needs keys and terms-of-service
   negotiations; fetching a KNOWN url is plain HTTP. The model finds
   urls in package metadata, error text, and its own notes.
-* NOT read_only, ON PURPOSE. It mutates nothing local, but it is the
-  one built-in that talks to the network from OUTSIDE every sandbox
-  wall -- bwrap-confined bash has no route out precisely so approved
-  calls can't phone home, and an auto-approved fetch would quietly
-  reopen that hole (url query strings carry data). So it gates like
-  bash: a human approves the address. Autonomous runs pass --yolo and
-  own that tradeoff explicitly.
+* NOT read_only, ON PURPOSE. It mutates nothing local, but it talks to
+  the network from OUTSIDE every sandbox wall -- bwrap-confined bash
+  has no route out precisely so approved calls can't phone home, and
+  an auto-approved fetch would quietly reopen that hole (url query
+  strings carry data). So it gates like bash: a human approves the
+  address. Autonomous runs pass --yolo and own that tradeoff
+  explicitly. The browser_* family inherits this rule.
 * TEXT OUT. Pages are stripped to readable text (stdlib HTMLParser --
   no scraping framework); non-HTML text formats pass through raw;
   anything binary is refused. One tool, one job.

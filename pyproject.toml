@@ -14,10 +14,20 @@ akshara = "akshara.cli.main:main"
 # Optional browser UI (akshara --web). The core stays httpx + rich; the web
 # layer is a deliberate exception -- FastAPI/uvicorn serve it, chosen over
 # hand-rolling an HTTP server when this feature called for one.
+#
+# Optional real-browser tools (browser_open/click/fill/close) run on
+# Playwright's headless Chromium. Installing this extra is itself the
+# opt-in: the four browser_* tools register only when playwright is
+# importable (see default_registry), so the default tool count -- and
+# the tool-selection threshold keyed to it -- never moves for users
+# who didn't ask for a 300MB browser.
 [project.optional-dependencies]
 web = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+]
+browse = [
+    "playwright>=1.49",
 ]
 
 [dependency-groups]

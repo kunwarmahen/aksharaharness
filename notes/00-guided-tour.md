@@ -493,7 +493,7 @@ machine; it is the same circle, pointed at a harder task.
 
 ```bash
 uv sync                                   # one-time setup
-uv run pytest -q                          # full offline suite (~564 tests)
+uv run pytest -q                          # full offline suite (~592 tests)
 
 # the rest talks to a real model (needs a key, or a local Ollama):
 uv run akshara                            # interactive session

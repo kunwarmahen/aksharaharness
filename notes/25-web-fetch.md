@@ -5,6 +5,10 @@ ignorance. A dependency's error message, an API changelog, the actual
 docs for a flag: invisible unless a human pasted them in. Autonomous
 missions kept dying on steps whose only requirement was "look it up."*
 
+*(Since this note was written the harness grew a SECOND road out — a
+real headless browser for the JS-rendered pages HTTP-stripping can
+never see: [notes/28](28-browser-tools.md).)*
+
 ## Scope, decided up front
 
 **Fetch, not search.** A search engine means API keys, terms of
