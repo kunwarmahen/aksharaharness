@@ -80,7 +80,8 @@ class Renderer:
 
             case ToolExecuted(call=call, result=result):
                 self._render_tool(call.name, call.arguments, result.content,
-                                  result.is_error)
+                                  result.is_error,
+                                  image_count=len(result.images))
 
             case EndEvent(stop_reason=_, usage=usage):
                 self._turn_tokens = usage.input_tokens + usage.output_tokens
@@ -108,12 +109,16 @@ class Renderer:
                 self.console.print(f"\n[yellow]── turn ended: {reason} "
                                    f"(after {n} iteration(s))[/yellow]")
 
-    def _render_tool(self, name: str, args: dict, output: str, is_error: bool) -> None:
+    def _render_tool(self, name: str, args: dict, output: str,
+                     is_error: bool, image_count: int = 0) -> None:
         style = "red" if is_error else "cyan"
         title = f"{name}()" + ("  [error]" if is_error else "")
         preview = output[:RESULT_PREVIEW_CHARS]
         if len(output) > RESULT_PREVIEW_CHARS:
             preview += f"\n[... {len(output) - RESULT_PREVIEW_CHARS} more chars ...]"
+        if image_count:
+            # the terminal can't draw it; say it arrived instead of silence
+            preview += f"\n[{image_count} image(s) attached to this result]"
         # Text() renders raw (no markup interpretation of model output)
         content = Group(
             Syntax(json.dumps(args, indent=2), "json", background_color="default"),

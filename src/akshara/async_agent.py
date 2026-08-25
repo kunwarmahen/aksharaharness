@@ -52,13 +52,14 @@ from akshara.agent import (
     AgentEvent,
     ToolExecuted,
     TurnEnd,
+    _batch_message,
     _truncate_middle,
 )
 from akshara.context import RED, SUMMARY_PROMPT, acompact_history, estimate_history
 from akshara.errors import ToolError
 from akshara.permissions import PermissionFn, PermissionRequest, allow_read_only
 from akshara.providers.base import Provider, acollect
-from akshara.tools.base import ToolContext, ToolRegistry
+from akshara.tools.base import ToolContext, ToolOutput, ToolRegistry
 from akshara.tools.selector import ToolCatalog, query_from_transcript
 from akshara.types import (
     Block,
@@ -214,7 +215,7 @@ class AsyncAgent:
                     executed[call.id] = result
                 for call, result in zip(calls, results):
                     yield ToolExecuted(call=call, result=result)
-                self.history.append(Message("user", list(batch)))
+                self.history.append(_batch_message(batch))
 
             # Ran out of iterations while the model still wanted tools.
             self._answer_outstanding({})
@@ -376,7 +377,7 @@ class AsyncAgent:
             else:
                 results[i] = outcome
         self.history.append(
-            Message("user", [r for r in results if r is not None]))
+            _batch_message([r for r in results if r is not None]))
         raise cancelled
 
     def _gate(self, call: ToolCall) -> ToolResult | None:
@@ -435,7 +436,13 @@ class AsyncAgent:
             result = ToolResult(call.id, f"{type(exc).__name__}: {exc}",
                                 is_error=True)
         else:
-            result = ToolResult(call.id, _truncate_middle(output))
+            if isinstance(output, ToolOutput):
+                # Rich result: text truncates like any other; images ride
+                # the result for _batch_message to hoist into history.
+                result = ToolResult(call.id, _truncate_middle(output.text),
+                                    images=output.images)
+            else:
+                result = ToolResult(call.id, _truncate_middle(output))
         self.on_after_tool(call, result)
         return result
 
@@ -451,13 +458,15 @@ class AsyncAgent:
         if not self.history or self.history[-1].role != "assistant":
             return
         blocks = []
+        images = []
         for call in self.history[-1].tool_calls():
             if call.id in executed:
                 # Real result already produced (and shown to the user),
                 # just never appended -- replay it faithfully.
                 done = executed[call.id]
                 blocks.append(ToolResult(call.id, done.content, done.is_error))
+                images.extend(done.images)
             else:
                 blocks.append(ToolResult(call.id, INTERRUPTED_MESSAGE, is_error=True))
         if blocks:
-            self.history.append(Message("user", blocks))
+            self.history.append(Message("user", [*blocks, *images]))

@@ -31,7 +31,7 @@ from akshara.context import (
 from akshara.errors import ToolError
 from akshara.permissions import PermissionFn, PermissionRequest, allow_read_only
 from akshara.providers.base import Provider, collect
-from akshara.tools.base import ToolContext, ToolRegistry
+from akshara.tools.base import ToolContext, ToolOutput, ToolRegistry
 from akshara.tools.selector import ToolCatalog, query_from_transcript
 from akshara.types import (
     Block,
@@ -77,6 +77,21 @@ def _truncate_middle(text: str, cap: int = MAX_TOOL_RESULT_CHARS) -> str:
     keep = cap // 2
     omitted = len(text) - cap
     return f"{text[:keep]}\n[... {omitted} chars omitted ...]\n{text[-keep:]}"
+
+
+def _batch_message(batch: list[ToolResult]) -> Message:
+    """A finished batch as ONE user message -- the shape the invariant wants.
+
+    Tool results come first (the OpenAI-family wires require them to
+    directly follow the assistant's tool calls); any images a tool
+    produced are hoisted after them, because those wires cannot carry an
+    image inside a role:"tool" payload. Anthropic takes the same block
+    order as-is. See ToolResult.images.
+    """
+    blocks: list[Block] = [*batch]
+    for result in batch:
+        blocks.extend(result.images)
+    return Message("user", blocks)
 
 
 class Agent:
@@ -224,7 +239,7 @@ class Agent:
                     executed[call.id] = result
                 for call, result in zip(calls, results):
                     yield ToolExecuted(call=call, result=result)
-                self.history.append(Message("user", list(batch)))
+                self.history.append(_batch_message(batch))
 
             # Ran out of iterations while the model still wanted tools.
             self._answer_outstanding({})
@@ -387,7 +402,7 @@ class Agent:
                             is_error=True,
                         )
             self.history.append(
-                Message("user", [r for r in results if r is not None])
+                _batch_message([r for r in results if r is not None])
             )
             raise cancelled
 
@@ -451,7 +466,14 @@ class Agent:
             result = ToolResult(call.id, f"{type(exc).__name__}: {exc}",
                                 is_error=True)
         else:
-            result = ToolResult(call.id, _truncate_middle(output))
+            if isinstance(output, ToolOutput):
+                # The rich-result path: text truncates like any other,
+                # images ride along on the result for the batch append to
+                # hoist into history (see _batch_message).
+                result = ToolResult(call.id, _truncate_middle(output.text),
+                                    images=output.images)
+            else:
+                result = ToolResult(call.id, _truncate_middle(output))
         self.on_after_tool(call, result)
         return result
 
@@ -468,13 +490,15 @@ class Agent:
         if not self.history or self.history[-1].role != "assistant":
             return
         blocks = []
+        images = []
         for call in self.history[-1].tool_calls():
             if call.id in executed:
                 # Real result already produced (and shown to the user),
                 # just never appended -- replay it faithfully.
                 done = executed[call.id]
                 blocks.append(ToolResult(call.id, done.content, done.is_error))
+                images.extend(done.images)
             else:
                 blocks.append(ToolResult(call.id, INTERRUPTED_MESSAGE, is_error=True))
         if blocks:
-            self.history.append(Message("user", blocks))
+            self.history.append(Message("user", [*blocks, *images]))

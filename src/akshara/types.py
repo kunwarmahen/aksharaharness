@@ -55,6 +55,13 @@ class ToolResult:
     tool_call_id: str
     content: str  # stdout / file contents / error message -- always a str
     is_error: bool = False
+    #: Images the tool produced alongside ``content`` (read_image). The
+    #: LOOP hoists these out when appending history -- they ride the same
+    #: user message AFTER the results, because the OpenAI-family wires
+    #: cannot carry an image inside a role:"tool" payload at all.
+    #: Adapters never read this field; they only ever see the hoisted
+    #: ImageBlocks, through their ordinary user-message encoding path.
+    images: list["ImageBlock"] = field(default_factory=list)
 
 
 @dataclass(slots=True)

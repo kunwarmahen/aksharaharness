@@ -892,6 +892,7 @@ Each topic has a short, plain-written note with the war stories:
 | A third provider dialect (Responses API) | [notes/19](notes/19-responses-api.md) |
 | Approve-with-edits (the y/n/e gate) | [notes/20](notes/20-approve-with-edits.md) |
 | A browser window on your agent — and a tool for asking *you* things | [notes/22](notes/22-web-ui.md) |
+| Tools that make it self-reliant: glob, todos, web fetch, background jobs, seeing pictures | [notes/23](notes/23-glob.md) · [notes/24](notes/24-todo-lists.md) · [notes/25](notes/25-web-fetch.md) · [notes/26](notes/26-background-bash.md) · [notes/27](notes/27-read-image.md) |
 
 And the best exercise known to man: point your finished `agent.py` at
 its own source code and ask it how the loop works. It can read itself.
