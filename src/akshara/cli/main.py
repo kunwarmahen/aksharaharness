@@ -23,7 +23,7 @@ from akshara.config import (
 from akshara.errors import ConfigError, ImageError, UserUnavailable
 from akshara.images import load_image_block
 from akshara.mcp import MCPError, MCPSession, load_mcp_configs, register_mcp
-from akshara.permissions import trust_sandbox, yolo
+from akshara.permissions import SwitchableGate, trust_sandbox, yolo
 from akshara.providers import get_provider
 from akshara.sandbox import autodetect
 from akshara.session import SessionStore, apply_payload
@@ -250,17 +250,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         web_session = WebSession()
 
-    if args.yolo:
-        gate = yolo
-    elif web_session is not None:
-        gate = web_session.permission_gate()
+    # The ask-gate is whatever surface the human sits on (terminal y/n/e or
+    # browser modal); sandbox-trust composes into it, then a SwitchableGate
+    # owns the runtime mode -- /yolo (REPL) and the mode chip (web) flip
+    # between asking and bypassing without a restart.
+    if web_session is not None:
+        ask_gate = web_session.permission_gate()
     else:
-        gate = confirm_gate(console)
-    if sandbox is not None and sandbox.confined and not args.yolo:
+        ask_gate = confirm_gate(console)
+    if sandbox is not None and sandbox.confined:
         # containment earns autonomy: confined bash runs without asking,
-        # every other tool keeps the confirm gate ([notes/16](../notes/16-sandboxing.md))
-        gate = trust_sandbox(gate, sandbox)
+        # every other tool keeps the ask-gate ([notes/16](../notes/16-sandboxing.md))
+        ask_gate = trust_sandbox(ask_gate, sandbox)
         console.print("[dim]sandboxed bash auto-approved; other writes ask[/dim]")
+    gate = SwitchableGate(ask_gate, mode="yolo" if args.yolo else "ask")
 
     agent = Agent(
         get_provider(provider_name, settings, cache_control=args.cache),

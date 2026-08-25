@@ -49,6 +49,8 @@ uv run akshara --provider openai                      # pick a dialect explicitl
 uv run akshara --provider ollama                      # LOCAL models (localhost:11434, no key)
 uv run akshara --provider ollama --model qwen3.8      # any tag you have pulled
 uv run akshara --yolo                                 # no permission prompts (careful)
+                                                      #   ...and /yolo flips it back
+                                                      #   mid-session (web UI: mode chip)
 uv run akshara --cache                                # prompt-cache breakpoints on
 uv run akshara --resume                               # restore the newest checkpoint
 uv run akshara "summarize README.md"                  # one-shot prompt, then exit
@@ -117,8 +119,9 @@ agent loop at `http://127.0.0.1:8321` (`--host`/`--port` to move it):
 streamed replies and thinking rendered as markdown (headings, tables,
 code blocks — by a ~150-line escape-first renderer, no library), tool
 cards, permission prompts with approve/deny/**edit**, image attachments,
-save/load/compact/model switches, and a Cancel button that mirrors
-Ctrl-C. Install the extra once: `uv sync --extra web`.
+save/load/compact/model switches, a permission-mode chip (ask ⇄ yolo,
+switchable mid-turn like the REPL's `/yolo`), and a Cancel button that
+mirrors Ctrl-C. Install the extra once: `uv sync --extra web`.
 
 ```bash
 uv run akshara --provider ollama --web      # local model + browser UI
@@ -290,7 +293,8 @@ src/akshara/
 │                   ([notes/08](notes/08-sub-agents.md))
 ├── permissions.py  PermissionRequest + gates: allow_read_only / yolo /
 │                   deny_all / trust_sandbox (auto-approves bash ONLY while
-│                   confined); approve-with-edits: a gate may rewrite arguments
+│                   confined); SwitchableGate flips ask ⇄ yolo mid-session;
+│                   approve-with-edits: a gate may rewrite arguments
 │                   pre-approval ([notes/20](notes/20-approve-with-edits.md))
 ├── context.py      compaction: mask old tool results, then summarize (red
 │                   zone) -- sync + async twins share all the arithmetic

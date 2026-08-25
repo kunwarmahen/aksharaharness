@@ -17,6 +17,7 @@ from conftest import ScriptedProvider, assistant_text
 from akshara.agent import Agent
 from akshara.permissions import (
     PermissionRequest,
+    SwitchableGate,
     allow_read_only,
     deny_all,
     yolo,
@@ -73,6 +74,41 @@ def test_yolo_approves_everything():
 def test_deny_all_denies_everything():
     assert deny_all(request_for("reader")) is False
     assert deny_all(request_for("writer")) is False
+
+
+# ---- runtime mode switching (SwitchableGate) ---------------------------------
+
+
+def test_switchable_gate_ask_mode_delegates_to_inner():
+    gate = SwitchableGate(allow_read_only)
+    assert gate.mode == "ask"
+    assert gate(request_for("reader")) is True   # inner gate's verdict
+    assert gate(request_for("writer")) is False
+
+
+def test_switchable_gate_yolo_mode_approves_everything():
+    gate = SwitchableGate(allow_read_only)
+    gate.set_mode("yolo")
+    assert gate(request_for("writer")) is True
+
+
+def test_toggle_round_trips_both_ways():
+    gate = SwitchableGate(deny_all)
+    assert gate.toggle() == "yolo"
+    # yolo wins over even deny_all while bypassed ...
+    assert gate(request_for("reader")) is True
+    assert gate.toggle() == "ask"
+    # ... and the moment it flips back, the inner gate rules again
+    assert gate(request_for("reader")) is False
+
+
+def test_set_mode_rejects_unknown_names():
+    gate = SwitchableGate(yolo)
+    with pytest.raises(ValueError):
+        gate.set_mode("YOLO")  # exact names only -- no case-folding guesses
+    with pytest.raises(ValueError):
+        gate.set_mode("plan")
+    assert gate.mode == "ask"  # a failed set leaves the mode untouched
 
 
 def test_permission_request_arguments_are_editable():

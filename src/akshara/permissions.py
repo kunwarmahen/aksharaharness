@@ -22,6 +22,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+#: The two runtime modes a session can sit in. "ask" defers to whatever
+#: gate the frontend supplied (y/n/e terminal prompt, browser modal);
+#: "yolo" approves everything.
+MODES = ("ask", "yolo")
+
 
 @dataclass(slots=True)
 class PermissionRequest:
@@ -76,3 +81,40 @@ def trust_sandbox(inner: PermissionFn, sandbox) -> PermissionFn:
             return True
         return inner(request)
     return gate
+
+
+@dataclass
+class SwitchableGate:
+    """A gate whose policy flips between "ask" and "yolo" MID-SESSION.
+
+    The CLI wires one of these around the frontend's real ask-gate
+    (confirm prompt or browser modal), so /yolo in the REPL and the mode
+    chip in the web UI are just ``set_mode`` calls -- the agent loop is
+    untouched, it keeps calling this object like any other gate. A flip
+    mid-turn simply applies to every not-yet-approved call afterwards;
+    the plain attribute read needs no lock (one writer, GIL-atomic).
+
+    Kept callable rather than adding a mode parameter to Agent on
+    purpose: gates are plain functions by design here, and embedders who
+    pass a bare function get today's fixed-gate behavior unchanged.
+    """
+
+    ask: PermissionFn  # what runs while mode == "ask"
+    mode: str = "ask"
+
+    def __call__(self, request: PermissionRequest) -> bool:
+        if self.mode == "yolo":
+            return yolo(request)
+        return self.ask(request)
+
+    def set_mode(self, mode: str) -> None:
+        """Flip the policy; unknown names are a loud error, not a silent ask."""
+        if mode not in MODES:
+            raise ValueError(f"unknown permission mode {mode!r} "
+                             f"(want one of {', '.join(MODES)})")
+        self.mode = mode
+
+    def toggle(self) -> str:
+        """ask -> yolo -> ask ...; returns the mode now in force."""
+        self.set_mode("ask" if self.mode == "yolo" else "yolo")
+        return self.mode

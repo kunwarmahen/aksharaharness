@@ -15,7 +15,7 @@ from conftest import ScriptedProvider, assistant_text
 
 from akshara.agent import Agent
 from akshara.cli.repl import Repl, confirm_gate
-from akshara.permissions import PermissionRequest, allow_read_only
+from akshara.permissions import PermissionRequest, SwitchableGate, allow_read_only
 from akshara.types import ImageBlock, StartEvent, TextBlock, TextDelta
 
 
@@ -292,3 +292,70 @@ class TestConfirmGateEdits:
                                staticmethod(lambda *a, **k: next(answers))):
             assert gate(request) is True
         assert request.arguments == {"command": "rm -rf /tmp/x"}
+
+
+class TestYoloCommand:
+    """/yolo flips the session between bypass-everything and ask-first,
+    mid-session -- the terminal half of runtime permission switching."""
+
+    @staticmethod
+    def make_gate_repl(lines: list[str], permissions=None):
+        """A Repl over a switchable (or injected) gate; exposes the console
+        so the announcements can be asserted, and the prompts actually fed."""
+        agent = Agent(ScriptedProvider([]), model="m",
+                      permissions=permissions or SwitchableGate(allow_read_only))
+        feeder = iter(lines)
+        seen_prompts: list[str] = []
+        console = Console(file=io.StringIO(), width=100)
+        repl = Repl(
+            agent, console,
+            input_fn=lambda prompt: (seen_prompts.append(prompt), next(feeder))[1],
+        )
+        return repl, console, agent.permissions, seen_prompts
+
+    def test_bare_command_toggles_on_then_off(self):
+        repl, console, gate, _ = self.make_gate_repl([])
+        assert repl._command("/yolo") is False
+        assert gate.mode == "yolo"
+        assert "WITHOUT asking" in console.file.getvalue()
+        assert repl._command("/yolo") is False
+        assert gate.mode == "ask"
+        assert "prompts back on" in console.file.getvalue()
+
+    def test_explicit_on_and_off(self):
+        repl, _, gate, _ = self.make_gate_repl([])
+        repl._command("/yolo on")
+        assert gate.mode == "yolo"
+        repl._command("/yolo off")
+        assert gate.mode == "ask"
+
+    def test_invalid_argument_reports_usage_and_keeps_mode(self):
+        repl, console, gate, _ = self.make_gate_repl([])
+        repl._command("/yolo maybe")
+        assert gate.mode == "ask"
+        assert "usage:" in console.file.getvalue()
+
+    def test_prompt_prefix_shows_yolo_while_bypassed(self):
+        repl, _, gate, seen = self.make_gate_repl(["first line", "second line"])
+        assert repl._read_line() == "first line"
+        assert seen == ["> "]
+        gate.set_mode("yolo")
+        assert repl._read_line() == "second line"
+        assert seen[-1] == "yolo> "
+
+    def test_banner_warns_only_while_bypassed(self):
+        repl, console, gate, _ = self.make_gate_repl([])
+        repl._banner()
+        assert "yolo" not in console.file.getvalue()
+        gate.set_mode("yolo")
+        console.file.truncate(0)
+        console.file.seek(0)
+        repl._banner()
+        assert "no permission prompts" in console.file.getvalue()
+
+    def test_fixed_gate_reports_instead_of_crashing(self):
+        repl, console, gate, _ = self.make_gate_repl([],
+                                                     permissions=allow_read_only)
+        repl._command("/yolo on")
+        assert not isinstance(gate, SwitchableGate)  # untouched static fn
+        assert "fixed" in console.file.getvalue()
