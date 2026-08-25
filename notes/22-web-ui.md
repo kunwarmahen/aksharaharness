@@ -81,10 +81,16 @@ Because the transcript is rebuilt from `history_envelopes()` on every
 connect, a refresh or a second tab rejoins mid-conversation: state,
 any still-pending question, then a replay rendered in the same shapes
 as the live feed. Plain request/response controls stay REST
-(`/api/message`, `/api/model`, `/api/provider`, `/api/save`,
-`/api/load`, `/api/compact`, `/api/clear`), and mutating ones refuse to
-run mid-turn (409) — the REPL serves slash commands between turns too;
-same single-operator assumption.
+(`/api/message`, `/api/model`, `/api/provider`, `/api/permissions`,
+`/api/save`, `/api/load`, `/api/compact`, `/api/clear`), and mutating
+ones refuse to run mid-turn (409) — the REPL serves slash commands
+between turns too; same single-operator assumption. The one deliberate
+exception is `/api/permissions`: flipping ask ⇄ yolo mid-turn is safe
+(the loop consults the gate per call) and is exactly how you rescue a
+turn stuck in approval modals. The top-bar mode chip shows the current
+mode — red while yolo — and clicking it flips; the endpoint broadcasts
+a fresh `state` so other open tabs follow along. Same switch backs the
+REPL's `/yolo` ([06-cli.md](06-cli.md)).
 
 ## Rendering the model's prose
 

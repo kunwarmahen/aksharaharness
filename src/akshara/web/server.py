@@ -370,6 +370,9 @@ class WebSession:
             "provider": agent.provider.name,
             "model": agent.model,
             "cwd": str(agent.ctx.cwd),
+            # "ask" | "yolo" -- agents built with a bare gate (tests,
+            # embedders) report the fixed default rather than crashing.
+            "mode": getattr(agent.permissions, "mode", "ask"),
             "tools": agent.registry.names(),
             "usage": {"input": u.input_tokens, "output": u.output_tokens,
                       "cache_read": u.cache_read_tokens,
@@ -546,6 +549,25 @@ def make_app(session: WebSession, static_dir: Path | None = None,
             session.agent.model = default_model(name)
         except Exception:
             pass  # keep the old slug; the operator sets one explicitly
+        return session.state()
+
+    @app.post("/api/permissions")
+    async def set_permissions(req: Request) -> dict[str, Any]:
+        """Flip the permission mode ("ask" <-> "yolo"). Deliberately NO
+        require_idle(): unlike model/provider swaps, flipping mid-turn is
+        safe and is the point -- it applies to every not-yet-approved call
+        of the running turn (rescues a turn stuck in approval modals).
+        Broadcasts state so every open tab's mode chip follows along."""
+        require_ready()
+        gate = session.agent.permissions
+        if not hasattr(gate, "set_mode"):
+            raise HTTPException(400, "permission mode is fixed for this "
+                                     "session (built without a switchable gate)")
+        try:
+            gate.set_mode((await req.json()).get("mode"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        session.broadcast({"type": "state", **session.state()})
         return session.state()
 
     @app.post("/api/save")

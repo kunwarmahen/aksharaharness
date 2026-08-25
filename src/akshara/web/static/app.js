@@ -114,6 +114,9 @@ async function fetchHistory() {
 function applyHeader(s) {
   $("#provider-name").textContent = s.provider;
   $("#model-name").textContent = s.model;
+  const yolo = s.mode === "yolo";
+  $("#mode-label").textContent = s.mode || "ask";
+  $("#chip-mode").classList.toggle("chip-yolo", yolo);
   $("#chip-cost").textContent = s.cost_line || "";
   const util = s.utilization;
   $("#chip-ctxbar").classList.toggle("hidden", util == null);
@@ -561,6 +564,18 @@ async function post(path, payload = {}) {
 $("#chip-model").onclick = () => {
   const slug = prompt("model slug:", $("#model-name").textContent);
   if (slug) post("/api/model", { model: slug }).then((s) => s && applyHeader(s));
+};
+// Permission mode: flip ask <-> yolo. Allowed mid-turn on purpose -- the
+// server applies it to every not-yet-approved call of the running turn.
+$("#chip-mode").onclick = () => {
+  const next = $("#mode-label").textContent === "yolo" ? "ask" : "yolo";
+  post("/api/permissions", { mode: next }).then((s) => {
+    if (!s) return;
+    applyHeader(s);
+    toast(next === "yolo"
+      ? "yolo on — tools run without asking"
+      : "permission prompts back on");
+  });
 };
 $("#chip-provider").onclick = () => {
   const name = prompt(

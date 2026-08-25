@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient # noqa: E402
 
 from conftest import ScriptedProvider, assistant_text, assistant_tool_call  # noqa: E402
 from akshara.agent import Agent  # noqa: E402
+from akshara.permissions import PermissionRequest, SwitchableGate, allow_read_only  # noqa: E402
 from akshara.providers.base import ProviderSettings  # noqa: E402
 from akshara.session import SessionStore  # noqa: E402
 from akshara.tools.ask_user import AskUser  # noqa: E402
@@ -391,3 +392,71 @@ def test_state_endpoint():
     state = client.get("/api/state").json()
     assert state["provider"] == "scripted"
     assert "ask_user" in state["tools"]
+
+
+# ---- permission-mode switching -------------------------------------------------
+
+
+def test_permission_mode_flips_via_rest_and_broadcasts_to_tabs():
+    """The mode chip's whole contract: POST flips the live gate, state
+    reports it, and every connected tab hears a fresh state envelope."""
+    session, agent = make_session([assistant_text("hi")])
+    browser_gate = agent.permissions  # the session's real ask-gate
+    agent.permissions = SwitchableGate(browser_gate)  # main.py's wiring
+    client = TestClient(make_app(session))
+
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "state"  # initial snapshot
+        flipped = client.post("/api/permissions", json={"mode": "yolo"})
+        assert flipped.status_code == 200, flipped.text
+        assert flipped.json()["mode"] == "yolo"
+        # the flip is announced to open tabs ...
+        env = ws.receive_json()
+        assert env["type"] == "state" and env["mode"] == "yolo"
+
+    # ... and it is LIVE: while bypassed, a write-shaped request runs
+    # without any human on the other end.
+    request = PermissionRequest(tool_name="write_thing", arguments={},
+                                summary="write_thing('x')", read_only=False)
+    assert agent.permissions(request) is True
+
+    back = client.post("/api/permissions", json={"mode": "ask"}).json()
+    assert back["mode"] == "ask"
+    # Asking again means handing control back to the SAME browser gate --
+    # asserted structurally: a direct call here would block on a human
+    # that no websocket is answering (that round-trip has its own tests).
+    assert agent.permissions.ask is browser_gate
+
+
+def test_permission_mode_validation_errors():
+    session, agent = make_session([assistant_text("hi")])
+    agent.permissions = SwitchableGate(allow_read_only)
+    client = TestClient(make_app(session))
+    assert client.post("/api/permissions", json={"mode": "bypass"}).status_code == 400
+    assert client.post("/api/permissions", json={}).status_code == 400
+    assert agent.permissions.mode == "ask"  # failures never half-flip
+
+
+def test_permission_mode_can_flip_mid_turn():
+    """/api/permissions deliberately skips require_idle: flipping during a
+    running turn applies to its not-yet-approved calls (that's the point)."""
+    session, agent = make_session([assistant_text("hi")])
+    agent.permissions = SwitchableGate(agent.permissions)  # main.py's wiring
+    session.turn_active = True  # force the race deterministically
+    client = TestClient(make_app(session))
+    try:
+        response = client.post("/api/permissions", json={"mode": "yolo"})
+        assert response.status_code == 200
+    finally:
+        session.turn_active = False
+
+
+def test_permissions_endpoint_rejects_fixed_gate():
+    """A session built with a bare gate (tests, embedders) answers with a
+    clean 400 -- the UI chip shows 'fixed', not a silent no-op."""
+    session, _ = make_session([assistant_text("hi")])  # bare browser gate
+    client = TestClient(make_app(session))
+    response = client.post("/api/permissions", json={"mode": "yolo"})
+    assert response.status_code == 400
+    assert "fixed" in response.json()["detail"]
+    assert client.get("/api/state").json()["mode"] == "ask"

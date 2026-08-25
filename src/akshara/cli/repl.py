@@ -33,7 +33,7 @@ from akshara.errors import ImageError, RateLimitError, UserUnavailable
 from akshara.images import load_image_block
 from akshara.pricing import session_cost
 from akshara.types import ImageBlock
-from akshara.permissions import PermissionRequest, yolo
+from akshara.permissions import MODES, PermissionRequest, SwitchableGate, yolo
 from akshara.providers import get_provider
 from akshara.sandbox import ToolSandbox
 from akshara.session import SessionStore, apply_payload
@@ -52,6 +52,8 @@ HELP = """[bold]commands[/bold]
   /load [name]       restore the newest checkpoint of a session
   /compact           force context compaction now (auto-fires at 80%)
   /clear             reset history (keeps provider/model)
+  /yolo [on|off]     flip permission prompts: bypass everything, or ask
+                     again (bare /yolo toggles; applies mid-turn)
   /image PATH...     stage image(s) onto your NEXT message ("clear" unstages)
   /quit              exit
 
@@ -220,7 +222,11 @@ class Repl:
         and continuation lines keep their leading indentation (pasted
         code must survive)."""
         parts: list[str] = []
-        line = self._input("> ").strip()  # first entry: plain REPL behavior
+        # The prompt itself carries the permission mode -- bypassing is
+        # precisely when you want a standing reminder of it. (Tests inject
+        # input_fn and never see this string.)
+        line = self._input(
+            "yolo> " if self._gate_mode() == "yolo" else "> ").strip()
         while True:
             continues = line.endswith("\\")
             if continues:
@@ -342,6 +348,8 @@ class Repl:
             case "clear":
                 self.agent.history.clear()
                 self.console.print("[green]history cleared[/green]")
+            case "yolo":
+                self._yolo_command(arg)
             case "save":
                 self._save_session(arg or "default")
             case "load":
@@ -353,6 +361,52 @@ class Repl:
             case _:
                 self.console.print(f"[red]unknown command {line!r} — /help[/red]")
         return False
+
+    # ---- permission mode ------------------------------------------------------
+
+    def _switchable_gate(self) -> SwitchableGate | None:
+        """The runtime-switchable gate, if this session has one. Agents built
+        with a bare PermissionFn (tests, embedders) keep the fixed-gate
+        behavior: /yolo reports instead of crashing."""
+        gate = self.agent.permissions
+        return gate if isinstance(gate, SwitchableGate) else None
+
+    def _gate_mode(self) -> str:
+        """Current mode of ANY gate -- switchable, plain confirm, or yolo.
+        What the prompt prefix and the banner display."""
+        switch = self._switchable_gate()
+        if switch is not None:
+            return switch.mode
+        return "yolo" if self.agent.permissions is yolo else "ask"
+
+    def _yolo_command(self, arg: str) -> None:
+        """/yolo [on|off]: flip between bypassing every approval and asking
+        first. Effective immediately, INCLUDING the remaining tool calls of
+        an in-flight turn -- the agent loop consults the gate per call."""
+        switch = self._switchable_gate()
+        if switch is None:
+            self.console.print(
+                "[red]this session's permission gate is fixed at startup -- "
+                "/yolo can't switch it[/red]")
+            return
+        wanted = arg.strip().lower()
+        if not wanted:
+            new_mode = switch.toggle()
+        elif wanted == "on":
+            switch.set_mode("yolo")
+            new_mode = "yolo"
+        elif wanted == "off":
+            switch.set_mode("ask")
+            new_mode = "ask"
+        else:
+            self.console.print(f"[red]usage: /yolo [on|off][/red]")
+            return
+        if new_mode == "yolo":
+            self.console.print("[red]yolo ON -- tools run WITHOUT asking; "
+                               "you accept the risk[/red]")
+        else:
+            self.console.print("[green]permission prompts back on -- "
+                               "risky calls ask first[/green]")
 
     # ---- cost ---------------------------------------------------------------
 
@@ -551,9 +605,10 @@ class Repl:
                         self.console.print(f"[red](unknown block: {type(block).__name__})[/red]")
 
     def _banner(self) -> None:
-        # warn ONLY when the gate really is bypassed
-        gated = "  [red](--yolo: no permission prompts)[/red]" \
-            if self.agent.permissions is yolo else ""
+        # warn ONLY when the gate really is bypassed (startup flag or a
+        # session that flipped since)
+        gated = "  [red](yolo: no permission prompts)[/red]" \
+            if self._gate_mode() == "yolo" else ""
         self.console.print(
             f"[bold]akshara[/bold] · provider={self.agent.provider.name} · "
             f"model={self.agent.model} · tools={len(self.agent.registry)} · "

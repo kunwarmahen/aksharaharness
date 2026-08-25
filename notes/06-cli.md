@@ -169,3 +169,31 @@ The same moment gave every run a second question to answer — not just
 
 One registration site, three channels — the frontend decides how to
 reach the person, the tool stays ignorant of all of them.
+
+## /yolo — flipping the gate mid-session
+
+`--yolo` used to be a startup-only decision: whatever gate went into
+the Agent stayed for life. Now a `SwitchableGate` wraps the session's
+real ask-gate (terminal y/n/e or browser modal), and both frontends can
+flip it while running:
+
+* **REPL**: `/yolo` (toggle), `/yolo on`, `/yolo off`. The prompt itself
+  becomes `yolo> ` and the banner warns while bypassed — the mode is
+  never silent.
+* **Web**: a mode chip in the top bar; clicking POSTs `/api/permissions`
+  ([22-web-ui.md](22-web-ui.md)), which broadcasts state so every open
+  tab follows.
+
+Two design points worth keeping:
+
+* **Mid-turn flips are allowed on purpose.** The agent loop consults the
+  gate once per call, so a flip lands at the next not-yet-approved call —
+  exactly what you want when a turn is spamming approval modals. That is
+  why `/api/permissions` skips the `require_idle` guard that
+  `/api/model` and `/api/provider` keep.
+* **Composition order matters.** `trust_sandbox` wraps *inside* the
+  switchable (it decorates the ask-branch, not the whole gate), so
+  `agent.permissions` IS the switch — no wrapper hides it from the
+  frontends, and confined-bash auto-approval survives mode flips either
+  way. Agents built with a bare function (tests, embedders) are told
+  the gate is fixed instead of crashing.

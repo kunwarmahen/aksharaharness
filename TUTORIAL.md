@@ -861,7 +861,7 @@ What you built maps almost one-to-one onto the big tools:
 |---|---|
 | `history` list | compaction: summarizing old context when it outgrows the window |
 | `TOOLS` dict + specs | dozens of tools, loaded dynamically to fit the model's attention |
-| `approved()` y/n | the grown-up gate asks y/n/**e** — `e` edits the command before you approve it ([notes/20](notes/20-approve-with-edits.md)) — plus sandboxed execution, audit hooks |
+| `approved()` y/n | the grown-up gate asks y/n/**e** — `e` edits the command before you approve it ([notes/20](notes/20-approve-with-edits.md)) — plus sandboxed execution, audit hooks; and when a task has earned your trust, `/yolo` switches the questions off (and back on) without leaving the conversation |
 | promise-book cleanup | sessions that survive restarts (SQLite checkpoints) |
 | one wire dialect (yours: cloud or local) | several providers behind one interface, retries and failover |
 | printed dollars? none yet | cost accounting: `$` figures per turn and per session |
