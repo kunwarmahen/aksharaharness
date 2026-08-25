@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>akshara</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">akshara<span class="brand-dot">✦</span></div>
+  <div class="chips">
+    <button class="chip" id="chip-provider" title="switch provider (POST /api/provider)">
+      <span class="chip-label" id="provider-name">—</span><span class="caret">▾</span></button>
+    <button class="chip" id="chip-model" title="switch model">
+      <span class="chip-label" id="model-name">—</span><span class="caret">▾</span></button>
+    <span class="chip chip-static" id="chip-cost" title="session cost — unknown slugs show no figure, never a guess"></span>
+    <span class="chip chip-static hidden" id="chip-ctxbar" title="context window pressure">
+      <span class="ctxbar"><span class="ctxbar-fill" id="ctx-fill"></span></span>
+      <span id="ctx-pct"></span></span>
+  </div>
+  <div class="actions">
+    <button class="ghost" id="btn-save" title="checkpoint session">save</button>
+    <button class="ghost" id="btn-load" title="restore checkpoint">load</button>
+    <button class="ghost" id="btn-compact" title="force context compaction">compact</button>
+    <button class="ghost" id="btn-clear" title="reset history">clear</button>
+  </div>
+</header>
+
+<div id="offline" class="hidden">connection lost — reconnecting…</div>
+
+<main id="transcript" aria-live="polite"></main>
+
+<div id="composer-wrap">
+  <div id="staged" class="hidden"></div>
+  <div id="statusline" class="hidden"><span class="spinner"></span><span id="status-text">connecting…</span></div>
+  <div id="composer">
+    <button id="btn-image" title="attach images (png/jpeg/gif/webp ≤5MB)">＋</button>
+    <textarea id="input" rows="1" placeholder="message the agent…  (enter to send, shift+enter for newline)"
+              autofocus></textarea>
+    <button id="btn-send" title="send">➤</button>
+    <button id="btn-cancel" class="danger hidden" title="cancel current turn">■</button>
+  </div>
+  <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.webp" multiple hidden>
+</div>
+
+<!-- one modal at a time: permission or ask -->
+<div id="modal-backdrop" class="hidden">
+  <div id="modal" role="dialog" aria-modal="true"></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

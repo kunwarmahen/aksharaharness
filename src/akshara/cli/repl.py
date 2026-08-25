@@ -29,7 +29,7 @@ from akshara.builder import BUILD_SYSTEM, BuildSpec, default_checks, run_build
 from akshara.cli.render import Renderer
 from akshara.config import default_model, load_settings
 from akshara.context import RED, estimate_history
-from akshara.errors import ImageError, RateLimitError
+from akshara.errors import ImageError, RateLimitError, UserUnavailable
 from akshara.images import load_image_block
 from akshara.pricing import session_cost
 from akshara.types import ImageBlock
@@ -203,6 +203,11 @@ class Repl:
                 # The generator below was interrupted mid-pull; closing it
                 # runs the agent's outstanding-call synthesis.
                 self.console.print("\n[yellow](cancelled)[/yellow]")
+            except UserUnavailable as exc:
+                # The model tried to consult its human and nobody was home
+                # (piped session, or stdin hit EOF). Turn failed, history
+                # resumable -- the session itself survives.
+                self.console.print(f"\n[red]turn failed: {exc}[/red]")
             except RateLimitError as exc:
                 wait = f" retry after {exc.retry_after:.0f}s" if exc.retry_after else ""
                 self.console.print(f"\n[red]rate limited.{wait}[/red]")

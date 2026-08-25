@@ -20,7 +20,7 @@ from akshara.config import (
     default_model,
     load_settings,
 )
-from akshara.errors import ConfigError, ImageError
+from akshara.errors import ConfigError, ImageError, UserUnavailable
 from akshara.images import load_image_block
 from akshara.mcp import MCPError, MCPSession, load_mcp_configs, register_mcp
 from akshara.permissions import trust_sandbox, yolo
@@ -29,6 +29,7 @@ from akshara.sandbox import autodetect
 from akshara.session import SessionStore, apply_payload
 from akshara.subagent import SpawnSubagent, SubagentSpawner
 from akshara.tools import default_registry
+from akshara.tools.ask_user import AskUser, TerminalChannel
 from akshara.tools.selector import AUTO_SELECTION_THRESHOLD, enable_selection
 
 
@@ -102,6 +103,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "self-contained subtasks to fresh-context child "
                              "agents (budget: 5/session); child streams are "
                              "teed to the terminal live")
+    parser.add_argument("--web", action="store_true",
+                        help="serve a local browser UI instead of the "
+                             "terminal REPL (chat, live streaming, approval "
+                             "buttons, session controls). Needs the web "
+                             "extra: uv sync --extra web")
+    parser.add_argument("--host", default="127.0.0.1", metavar="ADDR",
+                        help="bind address for --web (default: localhost only)")
+    parser.add_argument("--port", type=int, default=8321, metavar="PORT",
+                        help="port for --web (default: 8321)")
     parser.add_argument("--tool-select", type=int, default=None, metavar="K",
                         dest="tool_select",
                         help="dynamic tool loading: send only the K best-"
@@ -205,6 +215,11 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --build takes the spec itself; drop --prompt/PROMPT",
               file=sys.stderr)
         return 2
+    if args.web and (args.build or args.prompt or args.prompt_positional):
+        print("error: --web serves the interactive UI; drop --build/--prompt/"
+              "PROMPT (send messages from the browser instead)",
+              file=sys.stderr)
+        return 2
 
     try:
         provider_name = args.provider or _guess_provider()
@@ -221,7 +236,26 @@ def main(argv: list[str] | None = None) -> int:
     sandbox = autodetect() if args.sandbox else None
     if sandbox is not None:
         console.print(f"[dim]bash sandbox: {sandbox.describe}[/dim]")
-    gate = yolo if args.yolo else confirm_gate(console)
+
+    # --web swaps the terminal for a browser: same agent construction below,
+    # but the permission gate round-trips over the websocket instead of the
+    # rich prompt, and ask_user's channel reaches the human through the page.
+    web_session = None
+    if args.web:
+        try:
+            from akshara.web.server import WebSession  # lazy: optional extra
+        except ImportError:
+            print("error: --web needs the web extra: uv sync --extra web",
+                  file=sys.stderr)
+            return 2
+        web_session = WebSession()
+
+    if args.yolo:
+        gate = yolo
+    elif web_session is not None:
+        gate = web_session.permission_gate()
+    else:
+        gate = confirm_gate(console)
     if sandbox is not None and sandbox.confined and not args.yolo:
         # containment earns autonomy: confined bash runs without asking,
         # every other tool keeps the confirm gate ([notes/16](../notes/16-sandboxing.md))
@@ -242,6 +276,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.subagents:
         enable_subagents(agent, console)
+
+    # ask_user: the model can consult its human mid-turn. The CHANNEL decides
+    # what happens when nobody is home -- browser/websocket and TTY stdin
+    # block until answered; piped stdin registers no channel, so an ask fails
+    # the turn loudly (UserUnavailable) instead of guessing or hanging.
+    # Build agents get nothing: builds are autonomous by definition.
+    if web_session is not None:
+        agent.registry.register(AskUser(web_session.channel))
+    elif sys.stdin.isatty() and sys.stdout.isatty():
+        agent.registry.register(AskUser(TerminalChannel()))
+    else:
+        agent.registry.register(AskUser(None))
 
     store = SessionStore(Path(args.cwd) / ".akshara" / "session.sqlite3")
     repl = Repl(agent, console, store=store, sandbox=sandbox)
@@ -298,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:
                     console.print(f"[red]--resume failed: {exc}; starting fresh[/red]")
 
+        if web_session is not None:
+            from akshara.web.server import launch
+            return launch(web_session, agent, store,
+                          host=args.host, port=args.port)
+
         if args.prompt is not None or args.prompt_positional:
             try:
                 images = [load_image_block(Path(p)) for p in args.image]
@@ -310,6 +361,9 @@ def main(argv: list[str] | None = None) -> int:
             except KeyboardInterrupt:
                 console.print("\n[yellow](cancelled)[/yellow]")
                 return 130
+            except UserUnavailable as exc:
+                console.print(f"\n[red]turn failed: {exc}[/red]")
+                return 1
             except Exception as exc:
                 console.print(f"\n[red]{exc}[/red]")
                 return 1

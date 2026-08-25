@@ -891,6 +891,7 @@ Each topic has a short, plain-written note with the war stories:
 | Images, cost accounting | [notes/15](notes/15-images.md) · [notes/21](notes/21-cost-accounting.md) |
 | A third provider dialect (Responses API) | [notes/19](notes/19-responses-api.md) |
 | Approve-with-edits (the y/n/e gate) | [notes/20](notes/20-approve-with-edits.md) |
+| A browser window on your agent — and a tool for asking *you* things | [notes/22](notes/22-web-ui.md) |
 
 And the best exercise known to man: point your finished `agent.py` at
 its own source code and ask it how the loop works. It can read itself.

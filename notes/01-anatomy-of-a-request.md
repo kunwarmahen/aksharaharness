@@ -83,7 +83,8 @@ executable version of the wire-format cheat-sheet.
 
 ## Files added this phase
 
-- `pyproject.toml`, `.python-version` — uv-managed project, deps: httpx + rich only
+- `pyproject.toml`, `.python-version` — uv-managed project, core deps:
+  httpx + rich (the browser UI lives behind an optional `[web]` extra)
 - `src/akshara/types.py` — the shared vocabulary (read this first)
 - `src/akshara/errors.py` — two exception families: provider failures propagate, tool failures become data
 - `src/akshara/config.py` — env vars → settings; base-URL conventions documented at top
