@@ -103,6 +103,12 @@ by discovery ([.env.example](.env.example)):
 AKSHARA_DISABLED_TOOLS=browser_*,mcp__slack__*   # comma-separated globs on tool names
 ```
 
+That kill-switch is permanent (tools unregistered at startup). To pull
+a tool for just this session and put it back later: `/tools off bash`,
+`/tools on bash` in the REPL — globs work (`/tools off browser_*`) —
+or the switches in the web UI's tools panel. Both take effect
+immediately, even mid-turn ([notes/17](notes/17-tool-selection.md)).
+
 MCP servers (hand-rolled JSON-RPC — no SDK; stdio and Streamable-HTTP
 transports, picked by config shape). Config file, repeatable flag; tools
 register as `mcp__<server>__<tool>`:
@@ -132,8 +138,12 @@ streamed replies and thinking rendered as markdown (headings, tables,
 code blocks — by a ~150-line escape-first renderer, no library), tool
 cards, permission prompts with approve/deny/**edit**, image attachments,
 save/load/compact/model switches, a permission-mode chip (ask ⇄ yolo,
-switchable mid-turn like the REPL's `/yolo`), and a Cancel button that
-mirrors Ctrl-C. Install the extra once: `uv sync --extra web`.
+switchable mid-turn like the REPL's `/yolo`), a tools panel (every
+registered tool, switchable off/on mid-run like the REPL's `/tools`),
+a live context-pressure meter (amber at 60%, red at 80% — where
+auto-compaction starts caring), and a ■ Stop button that lands
+mid-sentence, not just between tool calls (Esc works too). Install the
+extra once: `uv sync --extra web`.
 
 ```bash
 uv run akshara --provider ollama --web      # local model + browser UI
@@ -203,13 +213,15 @@ and one that finishes ([notes/23](notes/23-glob.md)–
 REPL commands: `/help /model /provider /tools /history /usage /save /load
 /compact /clear /image /build /quit` (`//text` sends a literal leading slash; a
 trailing `\` continues the same message on the next line — paste-friendly
-multi-line input that keeps indentation). Ctrl-C
-cancels the current turn, not the session. `/build TASK` runs a child
+multi-line input that keeps indentation). `/tools` lists the toolset;
+`/tools off|on NAME|GLOB` pulls tools out (and back) mid-session.
+Ctrl-C cancels the current turn, not the session. `/build TASK` runs a child
 builder agent in its own workspace and reports BUILD GREEN/RED without
 touching this session's history. `/save`+`--resume` persist
 sessions to `.akshara/session.sqlite3` (append-only versions);
 `/compact` force-clears context pressure — auto-compaction also fires by
-itself at 80% of the window (`--context-window` to set it).
+itself at 80% of the window (`--context-window` to set it; the web UI's
+meter shows the same number live).
 
 Cost accounting ([notes/21](notes/21-cost-accounting.md)): the turn
 footer and `/usage` show approximate dollars from a built-in list-price
@@ -289,7 +301,8 @@ src/akshara/
 │                   (control-flow BaseException: nobody home to ask)
 ├── config.py       env vars -> ProviderSettings (+ .env auto-load)
 ├── agent.py        THE LOOP: model -> tool calls -> results -> repeat; optional
-│                   per-turn tool selection (top-K sent; exact-name calls admitted)
+│                   per-turn tool selection (top-K sent; exact-name calls admitted);
+│                   interrupt_check hook — hosts cancel mid-stream, same unwind as Ctrl-C
 ├── async_agent.py  the loop's async twin: same rules, awaited -- one event
 │                   loop drives K independent conversations ([notes/11](notes/11-async.md));
 │                   batch width capped by max_parallel_tools (semaphore inside
@@ -342,7 +355,8 @@ src/akshara/
 │   └── ollama.py     local models = OpenAI dialect profile (no auth, 8k window)
 ├── tools/
 │   ├── base.py     Tool ABC (schema + summary + run -> str | ToolOutput),
-│   │               ToolRegistry, arg validators
+│   │               ToolRegistry (runtime disable/enable — live-checked,
+│   │               reversible; unregister stays the permanent kill-switch), arg validators
 │   ├── fs.py       read_file / list_dir / write_file / edit_file (+ path sandbox)
 │   ├── glob.py     glob — find files by NAME ('**' recursion, newest-first,
 │   │               grep's skip rules); read-only so it never gates ([notes/23](notes/23-glob.md))
@@ -476,7 +490,7 @@ end ([notes/03](notes/03-sse-and-collect.md)).
 ## Run & test
 
 ```bash
-uv run pytest -q                 # full offline suite: 592 tests, NO network, NO key
+uv run pytest -q                 # full offline suite: 650 tests, NO network, NO key
 
 # everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
 uv run python examples/one_shot.py "Why is the sky blue?"
@@ -505,7 +519,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 592 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 650 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The
@@ -532,7 +546,10 @@ round-trip verbatim through tool loops (including unsigned ones behind
 a gateway that still validates the field), and an inverted
 yolo-warning guard in the banner ([notes/02](notes/02-wire-formats.md),
 [notes/04](notes/04-tools.md), [notes/06](notes/06-cli.md)). Building
-the web layer shook out two more, both caught by its tests before they
-could ship: SQLite connections used from the server thread without
-`check_same_thread=False` (every save 500'd), and a web permission
-gate that popped approval modals for read-only tools.
+the web layer shook out three more: SQLite connections used from the
+server thread without `check_same_thread=False` (every save 500'd) and
+a permission gate that popped approval modals for read-only tools —
+both caught by its tests before they could ship — plus one that did
+ship and was caught in use: the context meter pegged at 100% on small
+local windows, where the reply budget exceeded an 8k ollama window and
+clamped usable space to one token ([notes/22](notes/22-web-ui.md)).

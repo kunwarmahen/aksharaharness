@@ -18,8 +18,10 @@
       <span class="chip-label" id="model-name">—</span><span class="caret">▾</span></button>
     <button class="chip" id="chip-mode" title="permission mode — click to flip ask ⇄ yolo (tools run without asking in yolo)">
       <span class="chip-label" id="mode-label">—</span></button>
+    <button class="chip" id="chip-tools" title="view every tool — switch any off/on, even mid-run">
+      ⚙ <span id="tools-count">—</span></button>
     <span class="chip chip-static" id="chip-cost" title="session cost — unknown slugs show no figure, never a guess"></span>
-    <span class="chip chip-static hidden" id="chip-ctxbar" title="context window pressure">
+    <span class="chip chip-static hidden" id="chip-ctxbar">
       <span class="ctxbar"><span class="ctxbar-fill" id="ctx-fill"></span></span>
       <span id="ctx-pct"></span></span>
   </div>
@@ -43,7 +45,7 @@
     <textarea id="input" rows="1" placeholder="message the agent…  (enter to send, shift+enter for newline)"
               autofocus></textarea>
     <button id="btn-send" title="send">➤</button>
-    <button id="btn-cancel" class="danger hidden" title="cancel current turn">■</button>
+    <button id="btn-cancel" class="danger hidden" title="stop the current turn (esc)">■ stop</button>
   </div>
   <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.webp" multiple hidden>
 </div>
@@ -51,6 +53,19 @@
 <!-- one modal at a time: permission or ask -->
 <div id="modal-backdrop" class="hidden">
   <div id="modal" role="dialog" aria-modal="true"></div>
+</div>
+
+<!-- the tools panel: separate overlay so an approval modal can still
+     pop on top of it mid-run -->
+<div id="tools-backdrop" class="hidden">
+  <div id="tools-panel" role="dialog" aria-modal="true">
+    <div class="tools-head">
+      <h3>tools</h3>
+      <span class="tools-note">off = never sent to the model, its calls fail as data — applies immediately, even mid-run</span>
+      <button class="m-btn" id="tools-close">close</button>
+    </div>
+    <div id="tools-rows"></div>
+  </div>
 </div>
 
 <script src="/static/md.js"></script>

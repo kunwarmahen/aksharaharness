@@ -312,3 +312,65 @@ class TestListDir:
         lines = out.splitlines()
         assert lines[0] == "adir/"
         assert "zfile.txt" in lines
+
+
+class TestRegistryEnableDisable:
+    """Runtime disable: the soft, REVERSIBLE twin of unregister (the
+    AKSHARA_DISABLED_TOOLS startup kill-switch). Disabled tools stay
+    registered -- history and checkpoints keep referencing them -- but
+    are never sent, never returned by get(), and restorable mid-session."""
+
+    def _registry(self) -> ToolRegistry:
+        from akshara.tools.base import ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(ReadFile())
+        registry.register(WriteFile())
+        return registry
+
+    def test_disable_hides_from_specs_but_stays_registered(self):
+        registry = self._registry()
+        assert registry.disable("write_file") is True
+        assert {s.name for s in registry.specs()} == {"read_file"}
+        assert set(registry.names()) == {"read_file", "write_file"}
+
+    def test_get_refuses_disabled_with_distinct_message(self):
+        registry = self._registry()
+        registry.disable("write_file")
+        with pytest.raises(KeyError, match="disabled by the operator"):
+            registry.get("write_file")
+
+    def test_enable_restores(self):
+        registry = self._registry()
+        registry.disable("write_file")
+        assert registry.enable("write_file") is True
+        assert not registry.is_disabled("write_file")
+        assert registry.get("write_file").name == "write_file"
+
+    def test_enable_is_idempotent(self):
+        registry = self._registry()
+        assert registry.enable("write_file") is True  # never disabled
+        registry.disable("write_file")
+        assert registry.enable("write_file") is True
+        assert registry.enable("write_file") is True
+
+    def test_unknown_names_report_false(self):
+        registry = self._registry()
+        assert registry.disable("ghost") is False
+        assert registry.enable("ghost") is False
+        assert registry.disabled_names() == []
+
+    def test_unregister_clears_disabled_state(self):
+        """A disabled tool that gets unregistered must not linger in the
+        disabled set -- re-registering it later must start ENABLED."""
+        registry = self._registry()
+        registry.disable("write_file")
+        registry.unregister("write_file")
+        registry.register(WriteFile())
+        assert not registry.is_disabled("write_file")
+
+    def test_disabled_names_sorted(self):
+        registry = self._registry()
+        for name in ("write_file", "read_file"):
+            registry.disable(name)
+        assert registry.disabled_names() == ["read_file", "write_file"]

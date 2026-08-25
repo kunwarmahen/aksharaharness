@@ -197,3 +197,30 @@ Two design points worth keeping:
   frontends, and confined-bash auto-approval survives mode flips either
   way. Agents built with a bare function (tests, embedders) are told
   the gate is fixed instead of crashing.
+
+## /tools off|on — pulling tools mid-session
+
+The web UI got a panel of tool switches ([22-web-ui.md](22-web-ui.md));
+the terminal twin is one command with glob matching, so whole families
+go in one stroke:
+
+```
+/tools                     # list everything; pulled tools stay visible, marked [off]
+/tools off browser_*       # disable by name or glob — live on the next request
+/tools on browser_open     # ...and back
+```
+
+Design points that carried over from `/yolo`:
+
+* **Reversible, session-scoped.** `registry.disable()` hides a tool but
+  leaves it registered ([04-tools.md](04-tools.md)) — nothing to
+  rebuild, `/tools on` restores exactly what was there. The permanent
+  spelling stays `AKSHARA_DISABLED_TOOLS`, which unregisters at startup.
+* **The listing never lies by omission.** Disabled tools still appear,
+  marked `[off]` with a count in the header — an operator who forgot
+  what they switched off should be able to see it, not diff against a
+  memory.
+* One rendering trap: rich parses `[off]` as a MARKUP tag and silently
+  eats it — same failure mode as model output eating `[TODO]`, fixed
+  the same way (`\[off]`). The CLI keeps re-learning that brackets are
+  load-bearing.

@@ -460,3 +460,125 @@ def test_permissions_endpoint_rejects_fixed_gate():
     assert response.status_code == 400
     assert "fixed" in response.json()["detail"]
     assert client.get("/api/state").json()["mode"] == "ask"
+
+
+# ---- tools panel + runtime toggles ----------------------------------------------
+
+
+def test_tools_listing_carries_detail():
+    session, _ = make_session([assistant_text("hi")])
+    client = TestClient(make_app(session))
+    tools = {t["name"]: t for t in client.get("/api/tools").json()}
+    assert set(tools) == {"write_thing", "echo", "ask_user"}
+    assert tools["echo"]["read_only"] is True
+    assert tools["write_thing"]["read_only"] is False
+    assert all(t["enabled"] for t in tools.values())
+    assert all(t["description"] for t in tools.values())
+
+
+def test_toggle_disables_and_state_reports_it():
+    session, agent = make_session([assistant_text("hi")])
+    client = TestClient(make_app(session))
+    out = client.post("/api/tools", json={"name": "echo", "enabled": False})
+    assert out.status_code == 200, out.text
+    assert out.json()["disabled_tools"] == ["echo"]
+    assert agent.registry.is_disabled("echo")
+    # and back
+    out = client.post("/api/tools", json={"name": "echo", "enabled": True})
+    assert out.json()["disabled_tools"] == []
+
+
+def test_disabled_tool_call_fails_as_data_mid_turn():
+    """The point of the mid-turn-safe toggle: pulling a tool applies to the
+    RUNNING turn's next call -- the loop re-consults the registry per call.
+    A pending ask_user parks the worker between calls, so the toggle lands
+    deterministically before the second write_thing is ever gated."""
+    script = [
+        assistant_tool_call("c1", "write_thing", {"text": "one"}),
+        assistant_tool_call("a1", "ask_user", {"question": "continue?"}),
+        assistant_tool_call("c2", "write_thing", {"text": "two"}),
+        assistant_text("done"),
+    ]
+    session, agent = make_session(script)
+    client = TestClient(make_app(session))
+
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "state"
+        assert client.post("/api/message", json={"text": "go"}).status_code == 200
+
+        req = next(e for e in drain_until(ws, {"permission_request"})
+                   if e["type"] == "permission_request")
+        ws.send_json({"type": "answer", "id": req["id"], "decision": "approve"})
+        drain_until(ws, {"tool_result"})  # first call runs normally
+
+        ask = next(e for e in drain_until(ws, {"ask"}) if e["type"] == "ask")
+        # the turn is parked here -- flip the switch, then let it resume
+        assert session.turn_active
+        pulled = client.post("/api/tools",
+                             json={"name": "write_thing", "enabled": False})
+        assert pulled.status_code == 200  # no 409: mid-turn is the point
+        ws.send_json({"type": "answer", "id": ask["id"], "text": "yes"})
+
+        envelopes = drain_until(ws, {"turn_done"})
+        cards = [e for e in envelopes if e["type"] == "tool_result"]
+        assert len(cards) == 2
+        assert not cards[0]["is_error"]
+        assert cards[1]["is_error"]
+        assert "disabled by the operator" in cards[1]["output"]
+
+    # resumable, as on every abnormal-ish path -- three results: the
+    # clean write, ask_user's answer receipt, then the pulled tool's data
+    from akshara.types import ToolResult
+    results = [b for m in agent.history if m.role == "user"
+               for b in m.content if isinstance(b, ToolResult)]
+    assert [r.is_error for r in results] == [False, False, True]
+
+
+def test_toggle_validation_errors():
+    session, _ = make_session([assistant_text("hi")])
+    client = TestClient(make_app(session))
+    assert client.post("/api/tools",
+                       json={"name": "ghost", "enabled": False}).status_code == 404
+    assert client.post("/api/tools", json={"name": "echo"}).status_code == 400
+    assert client.post("/api/tools",
+                       json={"enabled": False}).status_code == 400
+
+
+def test_toggle_broadcasts_state_to_open_tabs():
+    session, _ = make_session([assistant_text("hi")])
+    client = TestClient(make_app(session))
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "state"
+        client.post("/api/tools", json={"name": "echo", "enabled": False})
+        env = ws.receive_json()
+        assert env["type"] == "state"
+        assert env["disabled_tools"] == ["echo"]
+
+
+def test_attach_wires_interrupt_check_to_cancel_flag():
+    """The Stop button's teeth are a wired flag, not a hope: attach() points
+    the loop's poll at the session cancel event."""
+    session, agent = make_session([assistant_text("hi")])
+    assert callable(agent.interrupt_check)
+    assert agent.interrupt_check() is False
+    session.cancel_turn()
+    assert agent.interrupt_check() is True
+
+
+def test_state_carries_pressure_numbers():
+    """The tooltip's honest numbers: the provider-reported footprint (not
+    an estimate) once one exists, plus the window it fills -- and the
+    estimated flag flipping accordingly."""
+    session, agent = make_session([assistant_text("hi")])
+    agent.history.append(Message("user", [TextBlock("seed")]))
+    agent.last_context_tokens = 5000
+
+    state = TestClient(make_app(session)).get("/api/state").json()
+    assert state["context_estimated"] is False
+    assert state["context_tokens"] == 5000
+    assert state["context_window"] == 200_000
+    assert 0 < state["utilization"] < 1
+
+    agent.last_context_tokens = 0  # no response yet: estimate + flag
+    state = TestClient(make_app(session)).get("/api/state").json()
+    assert state["context_estimated"] is True

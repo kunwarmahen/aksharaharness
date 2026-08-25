@@ -19,6 +19,7 @@ const ui = {
   currentThinking: null,
   openToolCard: null,     // tool_start awaiting its result
   modalId: null,
+  lastState: null,        // most recent state envelope (for mid-turn merges)
 };
 
 function forgetAssistant() {
@@ -71,7 +72,14 @@ function route(env) {
     case "redacted_thinking":  addRedacted(env.chars); break;
 
     case "tool_start":         openToolCard(env.name); break;
-    case "tool_result":        fillToolCard(env); break;
+    case "tool_result":        fillToolCard(env);
+                               // live envelopes carry fresh pressure; replay
+                               // ones don't -- only merge when present
+                               if (env.utilization != null && ui.lastState) {
+                                 renderPressure(
+                                   {...ui.lastState, utilization: env.utilization});
+                               }
+                               break;
 
     case "permission_request": showPermissionModal(env); break;
     case "ask":                showAskModal(env); break;
@@ -112,19 +120,47 @@ async function fetchHistory() {
 }
 
 function applyHeader(s) {
+  ui.lastState = s;
   $("#provider-name").textContent = s.provider;
   $("#model-name").textContent = s.model;
   const yolo = s.mode === "yolo";
   $("#mode-label").textContent = s.mode || "ask";
   $("#chip-mode").classList.toggle("chip-yolo", yolo);
   $("#chip-cost").textContent = s.cost_line || "";
+  // tools chip: "N" live, "+M off" when the operator pulled some
+  const off = (s.disabled_tools || []).length;
+  $("#tools-count").textContent =
+    (s.tools ? s.tools.length : "—") + (off ? ` · ${off} off` : "");
+  renderPressure(s);
+  setTurnUI(s.turn_active);
+}
+
+/* Context-window pressure. The bar mirrors auto-compaction's thresholds
+   (60% yellow / 80% red); under 10% we show a decimal so early-session
+   readings aren't all rounded to a lying flat 0%. The tooltip carries
+   the honest numbers behind it (real provider count once one exists,
+   chars/4 estimate before that). */
+function renderPressure(s) {
   const util = s.utilization;
   $("#chip-ctxbar").classList.toggle("hidden", util == null);
-  if (util != null) {
-    $("#ctx-fill").style.width = `${Math.round(util * 100)}%`;
-    $("#ctx-pct").textContent = `${Math.round(util * 100)}%`;
-  }
-  setTurnUI(s.turn_active);
+  if (util == null) return;
+  const pct = util * 100;
+  const shown = pct < 10 ? pct.toFixed(1) : String(Math.round(pct));
+  $("#ctx-fill").style.width = `${Math.min(pct, 100)}%`;
+  $("#ctx-fill").className = "ctxbar-fill"
+    + (pct >= 80 ? " danger" : pct >= 60 ? " warn" : "");
+  $("#ctx-pct").textContent = `${shown}%`;
+  $("#chip-ctxbar").classList.toggle("chip-ctx-danger", pct >= 80);
+  $("#chip-ctxbar").title =
+    `context pressure — ~${fmtNum(s.context_tokens)} of ` +
+    `${fmtNum(s.context_window)} window tokens` +
+    (s.context_estimated ? " (estimated)" : "") +
+    "; auto-compact at 80%";
+}
+
+function fmtNum(n) {
+  return n >= 10_000 ? `${(n / 1000).toFixed(n % 1000 ? 1 : 0)}k`
+    : String(n ?? 0);
 }
 
 /* ---------- turn lifecycle ---------- */
@@ -565,6 +601,14 @@ $("#chip-model").onclick = () => {
   const slug = prompt("model slug:", $("#model-name").textContent);
   if (slug) post("/api/model", { model: slug }).then((s) => s && applyHeader(s));
 };
+// esc stops the run — same as the red button. Deliberately NOT bound while
+// a permission/ask modal is up: there, esc must not silently deny anything.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && ui.turnActive && ui.modalId === null) {
+    e.preventDefault();
+    send({ type: "cancel" });
+  }
+});
 // Permission mode: flip ask <-> yolo. Allowed mid-turn on purpose -- the
 // server applies it to every not-yet-approved call of the running turn.
 $("#chip-mode").onclick = () => {
@@ -618,6 +662,73 @@ $("#btn-clear").onclick = async () => {
     toast("history cleared");
   }
 };
+
+/* ---------- tools panel ---------- */
+
+/* Every registered tool, with a live switch each. Toggles POST
+   immediately and are safe mid-turn: the loop consults the registry per
+   call, so pulling `bash` cuts the very next bash call of a running
+   turn. The panel sits UNDER the approval modal on purpose -- an
+   approval can still pop over it while you're in here. */
+
+$("#chip-tools").onclick = openToolsPanel;
+$("#tools-close").onclick = closeToolsPanel;
+$("#tools-backdrop").addEventListener("click", (e) => {
+  if (e.target === $("#tools-backdrop")) closeToolsPanel();
+});
+
+async function openToolsPanel() {
+  $("#tools-backdrop").classList.remove("hidden");
+  const rows = $("#tools-rows");
+  rows.textContent = "loading…";
+  let tools;
+  try {
+    const res = await fetch("/api/tools");
+    tools = res.ok ? await res.json() : null;
+  } catch { tools = null; }
+  if (!tools) { rows.textContent = "could not load tools"; return; }
+  rows.textContent = "";
+  for (const t of tools) rows.append(toolRow(t));
+}
+
+function toolRow(t) {
+  const row = document.createElement("div");
+  row.className = "tool-row" + (t.enabled ? "" : " off");
+
+  const name = document.createElement("div");
+  name.innerHTML = `<span class="t-name">${esc(t.name)}</span>`
+    + (t.read_only ? '<span class="t-ro">read-only</span>' : "");
+  row.append(name);
+
+  const desc = document.createElement("div");
+  desc.className = "t-desc";
+  desc.textContent = t.description;
+  row.append(desc);
+
+  const sw = document.createElement("label");
+  sw.className = "t-switch";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = t.enabled;
+  box.title = t.enabled ? "disable this tool" : "re-enable this tool";
+  box.onchange = async () => {
+    const s = await post("/api/tools", { name: t.name, enabled: box.checked });
+    if (!s) { box.checked = !box.checked; return; } // server refused; revert
+    applyHeader(s);
+    row.classList.toggle("off", !box.checked);
+    toast(`${t.name} ${box.checked ? "enabled" : "disabled — its calls now "
+      + "fail as data until re-enabled"}`);
+  };
+  const knob = document.createElement("span");
+  knob.className = "knob";
+  sw.append(box, knob);
+  row.append(sw);
+  return row;
+}
+
+function closeToolsPanel() {
+  $("#tools-backdrop").classList.add("hidden");
+}
 
 let toastTimer = null;
 function toast(msg) {

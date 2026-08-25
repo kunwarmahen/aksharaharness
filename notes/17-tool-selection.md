@@ -114,11 +114,13 @@ AKSHARA_TOOLS_PER_TURN=12          # .env spelling of the same switch
 ## Trimming the toolset entirely
 
 Selection decides what fits in a request; sometimes you want a tool to
-not exist. `AKSHARA_DISABLED_TOOLS` takes comma-separated glob patterns
-matched against tool names and UNREGISTERS matches after MCP servers
-connect but before any catalog is built — so a disabled tool is never
-sent, never executed, never suggested by `list_available_tools`, and
-never pinned:
+not exist. Two spellings, for two lifetimes:
+
+**Startup kill-switch (permanent).** `AKSHARA_DISABLED_TOOLS` takes
+comma-separated glob patterns matched against tool names and UNREGISTERS
+matches after MCP servers connect but before any catalog is built — so a
+disabled tool is never sent, never executed, never suggested by
+`list_available_tools`, and never pinned:
 
 ```bash
 # hide one family ...
@@ -131,8 +133,27 @@ A pattern matching nothing prints a warning — typos should be loud.
 The registry's `unregister(name)` is the primitive; the env var is just
 the operator-facing spelling.
 
-`enable_selection(registry)` is idempotent: a second call re-points the
-live discovery instance at the rebuilt index instead of colliding.
+**Mid-session pulls (reversible).** `registry.disable(name)` /
+`enable(name)` keep the tool registered but hide it behind a set that
+every layer consults LIVE ([04-tools.md](04-tools.md)): `_specs_for_request`
+drops the schema from the very next request, the execution choke point
+(`_get_visible_tool`) answers a call to it with error-data saying
+"disabled by the operator", `catalog.select` skips it **even when
+pinned** (a static pin list must not resurrect what the operator pulled),
+and the discovery hatch never suggests it. This is the machinery behind
+the web UI's tools panel and the REPL's `/tools off|on NAME|GLOB`
+([06-cli.md](06-cli.md)) — flips land mid-turn, on purpose, by the same
+argument as `/api/permissions`: the layers poll per call, so there is no
+unsafe moment. Unlike the kill-switch these die with the session;
+nothing is written to disk.
+
+`enable_selection(registry)` wires the live check once (`catalog.hidden =
+registry.is_disabled`, same for discovery) and is idempotent: a second
+call re-points the live discovery instance at the rebuilt index instead
+of colliding. The wiring goes through registry ITERATION rather than
+`get()` — deliberately, since `get()` now refuses disabled tools, and
+the discovery hatch must stay findable even when itself disabled.
+
 Below `AUTO_SELECTION_THRESHOLD = 20` don't bother (book's rule);
 MCP tools need nothing special — they are plain `Tool`s by the time
 they reach the registry ([notes/09](09-mcp.md)).

@@ -98,10 +98,20 @@ class Tool(ABC):
 
 
 class ToolRegistry:
-    """Name -> Tool mapping with duplicate protection."""
+    """Name -> Tool mapping with duplicate protection.
+
+    Tools can also be DISABLED at runtime (``disable``/``enable``): they
+    stay registered -- history and checkpoints keep referencing them --
+    but disappear from every request's specs, from discovery listings,
+    and their calls fail as readable data instead of executing. That is
+    the soft twin of ``unregister`` (the AKSHARA_DISABLED_TOOLS startup
+    kill-switch, which removes tools outright): a disable is reversible
+    mid-session, by the operator, on purpose.
+    """
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._disabled: set[str] = set()
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -110,19 +120,49 @@ class ToolRegistry:
 
     def unregister(self, name: str) -> bool:
         """Remove a tool by exact name; False when it was not registered."""
+        self._disabled.discard(name)
         return self._tools.pop(name, None) is not None
+
+    # ---- runtime enable/disable ---------------------------------------------
+
+    def disable(self, name: str) -> bool:
+        """Hide a registered tool from the model until re-enabled. Unknown
+        names report False rather than pre-registering a phantom."""
+        if name not in self._tools:
+            return False
+        self._disabled.add(name)
+        return True
+
+    def enable(self, name: str) -> bool:
+        """Undo a disable (idempotent). False only for unknown names."""
+        if name not in self._tools:
+            return False
+        self._disabled.discard(name)
+        return True
+
+    def is_disabled(self, name: str) -> bool:
+        return name in self._disabled
+
+    def disabled_names(self) -> list[str]:
+        return sorted(self._disabled)
 
     def get(self, name: str) -> Tool:
         try:
-            return self._tools[name]
+            tool = self._tools[name]
         except KeyError:
             raise KeyError(f"no such tool: {name!r}") from None
+        if name in self._disabled:
+            # A distinct message from "no such tool": the model naming it
+            # did nothing wrong -- the operator pulled it this session.
+            raise KeyError(f"tool {name!r} is disabled by the operator")
+        return tool
 
     def names(self) -> list[str]:
         return sorted(self._tools)
 
     def specs(self) -> list[ToolSpec]:
-        return [t.spec() for t in self._tools.values()]
+        return [t.spec() for t in self._tools.values()
+                if t.name not in self._disabled]
 
     def __iter__(self):
         return iter(self._tools.values())

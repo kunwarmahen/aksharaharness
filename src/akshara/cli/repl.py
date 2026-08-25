@@ -43,7 +43,9 @@ HELP = """[bold]commands[/bold]
   /help              this text
   /model [slug]      show or hot-swap the model
   /provider [name]   show or switch provider (history survives -- internal types!)
-  /tools             list registered tools and their schemas
+  /tools             list registered tools and their schemas ([off] = pulled)
+  /tools off|on NAME pull or restore tools MID-SESSION (globs ok:
+                     browser_*, mcp__slack__*); applies to the very next call
   /build SPEC        build a project from SPEC in a scratch workspace,
                      then independently verify it (BUILD GREEN/RED)
   /history           dump the conversation so far
@@ -300,19 +302,7 @@ class Repl:
                         f"provider: {self.agent.provider.name}, model: {self.agent.model}"
                     )
             case "tools":
-                if self.agent.tool_catalog is not None:
-                    pinned = [n for n in self.agent.tool_catalog.must_include
-                              if n != "list_available_tools"]
-                    self.console.print(
-                        f"[dim]selection active: top {self.agent.tools_per_turn} of "
-                        f"{len(self.agent.tool_catalog.tools)} each turn; "
-                        f"always loaded: {', '.join(pinned)} + "
-                        f"list_available_tools[/dim]")
-                for spec in self.agent.registry.specs():
-                    self.console.print(
-                        f"[bold]{spec.name}[/bold] — {spec.description}"
-                    )
-                    self.console.print_json(json.dumps(spec.parameters))
+                self._tools_command(arg)
             case "build":
                 if not arg:
                     self.console.print("[red]/build needs a spec: "
@@ -363,6 +353,69 @@ class Repl:
             case _:
                 self.console.print(f"[red]unknown command {line!r} — /help[/red]")
         return False
+
+    # ---- tools ----------------------------------------------------------------
+
+    def _tools_command(self, arg: str) -> None:
+        """/tools lists everything registered (disabled marked [off]);
+        ``/tools off|on NAME [NAME...]`` pulls or returns tools MID-SESSION.
+        Names may be globs (browser_*, mcp__slack__*) -- same matching rule
+        as the AKSHARA_DISABLED_TOOLS startup kill-switch, but reversible:
+        a pulled tool stays registered, it just stops being sent and its
+        calls fail as readable data until /tools on brings it back."""
+        import fnmatch
+
+        parts = arg.split()
+        if parts and parts[0] in ("off", "on"):
+            if len(parts) < 2:
+                self.console.print(f"[red]usage: /tools {parts[0]} "
+                                   "NAME|GLOB [NAME|GLOB...] -- bare /tools "
+                                   "lists[/red]")
+                return
+            patterns = parts[1:]
+            present = self.agent.registry.names()
+            affected = sorted({n for pat in patterns
+                               for n in present
+                               if fnmatch.fnmatch(n, pat)})
+            unmatched = [pat for pat in patterns
+                         if not any(fnmatch.fnmatch(n, pat) for n in present)]
+            registry = self.agent.registry
+            for name in affected:
+                (registry.enable if parts[0] == "on" else registry.disable)(name)
+            if affected:
+                verb = "re-enabled" if parts[0] == "on" else "disabled"
+                # The model-facing consequence, stated once: disabling is
+                # live immediately -- the loop re-consults per call.
+                self.console.print(
+                    f"[green]{verb} {len(affected)} tool(s):[/green] "
+                    f"{', '.join(affected)}")
+            for pat in unmatched:
+                self.console.print(f"[yellow]no tool matches {pat!r}[/yellow]")
+            return
+
+        disabled = set(self.agent.registry.disabled_names())
+        if disabled:
+            self.console.print(f"[dim]disabled this session "
+                               f"({len(disabled)}): {', '.join(sorted(disabled))} "
+                               f"-- /tools on NAME to restore[/dim]")
+        if self.agent.tool_catalog is not None:
+            pinned = [n for n in self.agent.tool_catalog.must_include
+                      if n != "list_available_tools"]
+            self.console.print(
+                f"[dim]selection active: top {self.agent.tools_per_turn} of "
+                f"{len(self.agent.tool_catalog.tools)} each turn; "
+                f"always loaded: {', '.join(pinned)} + "
+                f"list_available_tools[/dim]")
+        # Iterate ALL registered tools -- specs() omits disabled ones, and
+        # the whole point here is showing what's off as well as on.
+        for tool in self.agent.registry:
+            spec = tool.spec()
+            # \[ escapes rich markup -- bare [off] parses as a style tag
+            off = r" [red]\[off][/red]" if tool.name in disabled else ""
+            self.console.print(
+                f"[bold]{spec.name}[/bold]{off} — {spec.description}"
+            )
+            self.console.print_json(json.dumps(spec.parameters))
 
     # ---- permission mode ------------------------------------------------------
 

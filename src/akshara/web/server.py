@@ -26,9 +26,10 @@ Architecture in three moves:
 Cancellation mirrors Ctrl-C exactly: the cancel flag is honored while
 streaming (between events), between tool executions, and while blocked on
 a human answer -- each path closes the generator so the agent's
-resumable-history synthesis runs. An in-flight MODEL call cannot be
-interrupted (same as the terminal: workers get no SIGINT); the cancel
-lands at the next checkpoint.
+resumable-history synthesis runs. Because the loop polls the flag INSIDE
+the model stream too (Agent.interrupt_check), a Stop click lands within
+one SSE event of a long generation -- the one gap terminal Ctrl-C had
+that a signal-less worker thread used to keep open.
 
 Mutating REST endpoints refuse to run mid-turn (409): the REPL serves its
 slash commands between turns too -- same single-operator assumption.
@@ -52,6 +53,7 @@ from fastapi.staticfiles import StaticFiles
 
 from akshara.agent import Agent, ToolExecuted, TurnEnd
 from akshara.config import default_model, load_settings
+from akshara.context import estimate_history
 from akshara.errors import ProviderError, UserUnavailable
 from akshara.images import image_block_from_bytes
 from akshara.permissions import PermissionRequest
@@ -137,6 +139,10 @@ class WebSession:
         # cannot be yielded -- collect() owns that pull). Same wiring as the
         # REPL's renderer: without this, text/thinking deltas vanish.
         agent.on_stream_event = self._emit
+        # The Stop button's teeth: the loop polls this flag between stream
+        # events and between tool calls, so a click lands mid-model-call --
+        # as close to terminal Ctrl-C as a signal-less worker can get.
+        agent.interrupt_check = self._cancel.is_set
 
     @property
     def channel(self) -> "WebSession":
@@ -180,9 +186,10 @@ class WebSession:
             self._pending.answers.put_nowait(message)
 
     def cancel_turn(self) -> None:
-        """The Cancel button / ctrl-c equivalent. Honored at the next
-        checkpoint: between stream events, between tools, or while a human
-        interaction is pending (that queue gets the sentinel immediately)."""
+        """The Stop button / ctrl-c equivalent. Honored between stream
+        events -- i.e. mid-model-call, within one SSE event -- between
+        tools, and while a human interaction is pending (that queue gets
+        the sentinel immediately)."""
         self._cancel.set()
         pending = self._pending
         if pending is not None:
@@ -342,6 +349,10 @@ class WebSession:
                     "arguments": call.arguments,
                     "output": result.content,
                     "is_error": result.is_error,
+                    # Pressure moves during a turn too (each iteration
+                    # refills the window); the header bar follows along
+                    # instead of waiting for the end-of-turn state.
+                    "utilization": self.agent.utilization(),
                 })
             case EndEvent(stop_reason=_, usage=_):
                 pass  # per-call usage; the TurnEnd footer carries totals
@@ -374,10 +385,21 @@ class WebSession:
             # embedders) report the fixed default rather than crashing.
             "mode": getattr(agent.permissions, "mode", "ask"),
             "tools": agent.registry.names(),
+            # Runtime-disabled subset of ``tools`` (the /api/tools panel's
+            # toggles); empty for a stock session.
+            "disabled_tools": agent.registry.disabled_names(),
             "usage": {"input": u.input_tokens, "output": u.output_tokens,
                       "cache_read": u.cache_read_tokens,
                       "cache_write": u.cache_write_tokens},
             "utilization": agent.utilization(),
+            # The honest numbers behind the pressure bar: what the last
+            # request actually filled and how big the window is at all.
+            # Before the first response arrives there is no provider
+            # figure -- fall back to the chars/4 estimate and SAY so.
+            "context_estimated": agent.last_context_tokens == 0,
+            "context_tokens": (agent.last_context_tokens or
+                               estimate_history(agent.history)),
+            "context_window": agent.context_window,
             "cost_line": cost_line(agent),
             "turn_active": self.turn_active,
         }
@@ -567,6 +589,46 @@ def make_app(session: WebSession, static_dir: Path | None = None,
             gate.set_mode((await req.json()).get("mode"))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        session.broadcast({"type": "state", **session.state()})
+        return session.state()
+
+    @app.get("/api/tools")
+    def tools_list() -> list[dict[str, Any]]:
+        """The tools panel's data: everything registered, with enough
+        detail to decide what to pull -- description, whether it prompts,
+        and its current enabled state."""
+        require_ready()
+        registry = session.agent.registry
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "read_only": tool.read_only,
+                "enabled": not registry.is_disabled(tool.name),
+            }
+            for tool in sorted(registry, key=lambda t: t.name)
+        ]
+
+    @app.post("/api/tools")
+    async def tools_toggle(req: Request) -> dict[str, Any]:
+        """Enable/disable one tool by exact name. Deliberately NO
+        require_idle(): like the permission flip, mid-turn is the POINT --
+        pulling a tool applies to the running turn's next call (the loop
+        re-consults the registry per call), so a runaway `bash` chain can
+        be cut without waiting it out. Unknown names are a clean 400."""
+        require_ready()
+        body = await req.json()
+        name, enabled = body.get("name"), body.get("enabled")
+        if not isinstance(name, str) or not isinstance(enabled, bool):
+            raise HTTPException(400, "name (str) and enabled (bool) required")
+        registry = session.agent.registry
+        if name not in registry:
+            raise HTTPException(404, f"no such tool: {name!r}")
+        if enabled:
+            registry.enable(name)
+        else:
+            registry.disable(name)
+        # Broadcast so every open tab's chip count follows along.
         session.broadcast({"type": "state", **session.state()})
         return session.state()
 

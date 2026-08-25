@@ -354,3 +354,77 @@ class TestLoopIntegration:
                       permissions=yolo)
         agent.run("anything")
         assert len(provider.requests[0]["tools"]) == 30
+
+
+# ---- runtime-disabled tools -----------------------------------------------------
+
+
+class TestDisabledTools:
+    """The operator's mid-session pulls must hold at every layer: no
+    selection slot, no pin slot, no discovery suggestion, no execution --
+    all consulted LIVE, so /tools off takes effect on the next call."""
+
+    def test_select_skips_hidden_even_as_pins(self):
+        """CORE_PINS is a static list; a pinned tool that the operator
+        pulled this session must not load anyway."""
+        registry = ToolRegistry()
+        for name in CORE_PINS:
+            registry.register(_mk(name, f"{name}: terse generic description"))
+        registry.disable("bash")
+        catalog, _ = enable_selection(registry)
+        picked = {t.name for t in catalog.select("refactor anything", k=12)}
+        assert "bash" not in picked
+
+    def test_discovery_never_suggests_hidden(self):
+        registry = ToolRegistry()
+        registry.register(_mk("mcp__db__run_query",
+                              "execute sql against a database"))
+        registry.register(_mk("mcp__db__drop_all", "drop everything"))
+        registry.disable("mcp__db__drop_all")
+        catalog, discovery = enable_selection(registry)
+        out = discovery.run({}, None)
+        assert "mcp__db__run_query" in out
+        assert "mcp__db__drop_all" not in out
+
+    def test_catalog_get_returns_none_for_hidden(self):
+        """Soft admission goes through catalog.get -- returning None here
+        (not the tool) is what stops a model-named disabled call from
+        being admitted into the visible set."""
+        registry = ToolRegistry()
+        registry.register(_mk("special", "a special utility"))
+        registry.disable("special")
+        catalog, _ = enable_selection(registry)
+        assert catalog.get("special") is None
+
+    def test_disable_after_wiring_applies_live(self):
+        """hidden is consulted per call, not baked in at enable_selection
+        time -- flipping it afterwards changes selection immediately."""
+        registry = ToolRegistry()
+        for name in CORE_PINS:
+            registry.register(_mk(name, f"{name}: terse generic description"))
+        catalog, _ = enable_selection(registry)
+        assert "bash" in {t.name for t in catalog.select("x y z", k=12)}
+        registry.disable("bash")
+        assert "bash" not in {t.name for t in catalog.select("x y z", k=12)}
+
+
+class TestLoopDisabledTool:
+    def test_disabled_call_errors_as_data_mid_selection(self):
+        """With selection active AND the tool unselected-but-real, a call
+        to an operator-pulled tool fails as data -- the agent-level choke
+        point (_get_visible_tool) refuses before soft admission."""
+        provider = ScriptedProvider([
+            ModelResponse(Message("assistant", [
+                ToolCall("c1", "mcp__db__run_query", {"sql": "select 1"}),
+            ]), "tool_use", Usage(input_tokens=10, output_tokens=5)),
+            ModelResponse(Message("assistant",
+                                  [TextBlock("moving on")]), "end_turn", Usage()),
+        ])
+        agent = _agent_with_selection(provider, k=5)
+        agent.registry.disable("mcp__db__run_query")
+
+        events = list(agent.run_streaming("database work please"))
+        errors = [e.result for e in events
+                  if hasattr(e, "result") and e.result.is_error]
+        assert errors, "disabled call must fail as data"
+        assert "disabled by the operator" in errors[0].content

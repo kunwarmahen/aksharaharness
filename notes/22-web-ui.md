@@ -82,15 +82,36 @@ connect, a refresh or a second tab rejoins mid-conversation: state,
 any still-pending question, then a replay rendered in the same shapes
 as the live feed. Plain request/response controls stay REST
 (`/api/message`, `/api/model`, `/api/provider`, `/api/permissions`,
-`/api/save`, `/api/load`, `/api/compact`, `/api/clear`), and mutating
-ones refuse to run mid-turn (409) — the REPL serves slash commands
-between turns too; same single-operator assumption. The one deliberate
-exception is `/api/permissions`: flipping ask ⇄ yolo mid-turn is safe
-(the loop consults the gate per call) and is exactly how you rescue a
-turn stuck in approval modals. The top-bar mode chip shows the current
-mode — red while yolo — and clicking it flips; the endpoint broadcasts
-a fresh `state` so other open tabs follow along. Same switch backs the
-REPL's `/yolo` ([06-cli.md](06-cli.md)).
+`/api/tools`, `/api/save`, `/api/load`, `/api/compact`, `/api/clear`),
+and mutating ones refuse to run mid-turn (409) — the REPL serves slash
+commands between turns too; same single-operator assumption. Two
+deliberate exceptions skip that guard:
+
+* `/api/permissions` — flipping ask ⇄ yolo mid-turn is safe (the loop
+  consults the gate per call) and is exactly how you rescue a turn
+  stuck in approval modals.
+* `/api/tools` — `GET` lists every registered tool with its read-only
+  flag and on/off state; `POST {"name": ..., "enabled": ...}` flips
+  one. Safe for the same reason: the registry's disabled set is
+  consulted LIVE at every layer ([17-tool-selection.md](17-tool-selection.md)),
+  so pulling a tool mid-turn just makes its *next* call fail as data
+  ("disabled by the operator"), which the model reads and routes
+  around.
+
+Both endpoints broadcast a fresh `state` so other open tabs follow
+along. The top-bar mode chip shows the permission mode — red while
+yolo — and clicking it flips; the ⚙ tools chip opens a panel of the
+same switches with a count of how many are off. Same switches back the
+REPL's `/yolo` and `/tools off|on` ([06-cli.md](06-cli.md)).
+
+The `state` snapshot also carries the context-pressure numbers
+(`context_tokens`, `context_window`, an `estimated` flag for when only
+the chars/4 fallback is available), and every `tool_result` envelope
+carries fresh utilization — so the meter in the header updates during
+a turn, not just between turns. The bar turns amber at 60% and red at
+80%, mirroring exactly where auto-compaction starts caring
+([07-reliability-and-scale.md](07-reliability-and-scale.md)); hovering
+shows the raw numbers.
 
 ## Rendering the model's prose
 
@@ -135,18 +156,26 @@ cron, evals), and a call raises `UserUnavailable` — deliberately a
 [errors.py](../src/akshara/errors.py)). The turn fails loudly, exit
 code 1, history stays resumable. Receipt below.
 
-## Cancel is Ctrl-C, at the same three places
+## Cancel is Ctrl-C, at every checkpoint including mid-sentence
 
-The Cancel button sets a flag honored where the terminal honors SIGINT:
-between yielded loop events (the generator is closed, outstanding calls
-synthesized, history stays valid) and while blocked on a human
-question. An in-flight MODEL call still can't be interrupted — workers
-get no signals — so the cancel lands at the next checkpoint. Verified
-live below, including the case where it *doesn't* feel instant.
+The Cancel button sets a flag honored everywhere the terminal honors
+SIGINT — between yielded loop events (the generator is closed,
+outstanding calls synthesized, history stays valid), while blocked on a
+human question, and now **during the model call itself**: the session
+hands the agent an `interrupt_check` callback (it reads the cancel
+flag), and the loop polls it between stream events inside `_tee`.
+Worker threads get no signals, so this is cooperation, not preemption —
+but a healthy connection yields deltas constantly, so the stop lands
+milliseconds after the click instead of at turn's end. The honest edge:
+a provider gone silent sends nothing to poll between, so the worst case
+is still "next checkpoint". Either way the unwind is the same code path
+Ctrl-C takes, history resumable ([05-agent-loop.md](05-agent-loop.md)).
+In the page, Esc does the same as the ■ button whenever a turn is
+running and no modal owns the keyboard.
 
 ## What the tests pin
 
-41 new offline tests, no network, no key:
+52 new offline tests, no network, no key:
 
 * `test_ask_user.py` (17): free-text and choice answers reach history
   with the `(picked option k/N)` marker; five arg-validation ToolErrors;
@@ -154,14 +183,18 @@ live below, including the case where it *doesn't* feel instant.
   turn; a batch-mate running beside a failed ask keeps its real result;
   `read_only=True` never gates; TerminalChannel choice/free-text/
   empty-reprompt/EOF behaviors.
-* `test_web_server.py` (14): connect handshake (state, pending question,
+* `test_web_server.py` (25): connect handshake (state, pending question,
   replay); streaming deltas; deny becomes error data; the full
   edit→re-summary→approve round-trip adopting edited args into history;
   ask answered over the wire; cancel during a pending ask, then the
   session serves another turn; 409 on concurrency; 400 validations;
-  save/load with injectable provider factories — plus the strict path:
-  restoring a checkpoint whose provider has no key fails cleanly and
-  leaves the live agent untouched.
+  save/load with injectable provider factories; the strict restore path
+  whose provider has no key fails cleanly and leaves the live agent
+  untouched — plus the newer pins: tools listing with detail, toggle
+  validation errors, a disabled tool's call failing as data MID-turn
+  (an `ask_user` parks the worker so the flip lands deterministically),
+  state broadcasts reaching a second open tab, `interrupt_check` wired
+  to the cancel flag, and pressure numbers in `state`.
 * `test_md_renderer.py` (10): the page's markdown renderer executed by
   node — escaping above all (model HTML stays text), emphasis/code/
   strike, heading mapping, fenced code, tables, nested and ordered
@@ -189,7 +222,10 @@ All against local Ollama `qwen3.8` (27B, Q4):
    existed); approve wrote the sentence; the footer read
    `$0.00 (local model)`. Sending `cancel` while the modal was open gave
    `resolved` → `turn_cancelled`, and the next message ran clean.
-4. **Honest miss**: firing cancel right after the first text delta did
-   NOT stop a 300-word essay — the in-flight model call ran on and the
-   turn completed. Exactly the documented limit; cancel waits for the
-   next checkpoint, same as the terminal.
+4. **Honest miss → fixed**: the first time around, firing cancel right
+   after the first text delta did NOT stop a 300-word essay — the
+   in-flight model call ran on to completion, exactly as this note then
+   documented as a limit. That miss is what bought the cooperative
+   interrupt above: re-running the same experiment now stops within a
+   delta or two of the click, with the partial reply left on screen and
+   history clean for the next message.
