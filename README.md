@@ -83,12 +83,24 @@ uv run akshara --sandbox none               # explicit legacy behavior
 
 Dynamic tool loading ([notes/17](notes/17-tool-selection.md)) — past
 ~20 tools the model's selection accuracy hits the cliff, so per turn
-only the top-K relevant tools are SENT and EXECUTABLE (BM25 over name +
-description), with a pinned `list_available_tools` discovery hatch:
+only the top-K best-matching tools are SENT (BM25 over name +
+description). The autonomy loop's floor always loads regardless of
+matching — `read_file`, `write_file`, `edit_file`, `bash`, `glob`,
+`grep` plus the `list_available_tools` discovery hatch — and calling
+any real tool by its exact name loads it on the spot, so a selection
+miss costs nothing:
 
 ```bash
-uv run akshara --mcp-config big.json --tool-select 7    # force width K
+uv run akshara --mcp-config big.json --tool-select 12   # force width K
 uv run akshara --tool-select 0                          # opt out of auto-enable
+# (.env equivalent: AKSHARA_TOOLS_PER_TURN=12)
+```
+
+Trim tools you never want — not sent, not executed, not even suggested
+by discovery ([.env.example](.env.example)):
+
+```bash
+AKSHARA_DISABLED_TOOLS=browser_*,mcp__slack__*   # comma-separated globs on tool names
 ```
 
 MCP servers (hand-rolled JSON-RPC — no SDK; stdio and Streamable-HTTP
@@ -277,7 +289,7 @@ src/akshara/
 │                   (control-flow BaseException: nobody home to ask)
 ├── config.py       env vars -> ProviderSettings (+ .env auto-load)
 ├── agent.py        THE LOOP: model -> tool calls -> results -> repeat; optional
-│                   per-turn tool selection (send AND execute only the top-K)
+│                   per-turn tool selection (top-K sent; exact-name calls admitted)
 ├── async_agent.py  the loop's async twin: same rules, awaited -- one event
 │                   loop drives K independent conversations ([notes/11](notes/11-async.md));
 │                   batch width capped by max_parallel_tools (semaphore inside
@@ -351,7 +363,7 @@ src/akshara/
 │   │               imports, so the tool count never moves uninvited
 │   │               ([notes/28](notes/28-browser-tools.md))
 │   ├── selector.py dynamic tool loading: BM25 ToolCatalog over name+
-│   │               description, transcript-derived query, pinned
+│   │               description, transcript-derived query, core pins +
 │   │               list_available_tools discovery hatch ([notes/17](notes/17-tool-selection.md))
 │   ├── search.py   grep — ripgrep subprocess when available, pure-python
 │   │               walker fallback (identical output contract)

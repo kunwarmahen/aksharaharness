@@ -108,6 +108,10 @@ class ToolRegistry:
             raise ValueError(f"duplicate tool name: {tool.name!r}")
         self._tools[tool.name] = tool
 
+    def unregister(self, name: str) -> bool:
+        """Remove a tool by exact name; False when it was not registered."""
+        return self._tools.pop(name, None) is not None
+
     def get(self, name: str) -> Tool:
         try:
             return self._tools[name]

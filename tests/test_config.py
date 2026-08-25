@@ -16,9 +16,12 @@ from pathlib import Path
 import pytest
 
 from akshara import config
+from akshara.errors import ConfigError
 from akshara.config import (
     _load_dotenv,
     default_context_window,
+    default_tool_select,
+    disabled_tool_patterns,
 )
 
 
@@ -107,3 +110,36 @@ class TestEndToEnd:
         )
         _load_dotenv()
         assert default_context_window("ollama") == 8192
+
+
+class TestToolSelectEnv:
+    """AKSHARA_TOOLS_PER_TURN backs --tool-select: same semantics, .env
+    convenience. K forces the width on, 0 forces selection off, unset
+    leaves the auto-enable rule to decide."""
+
+    def test_unset_is_none(self, monkeypatch):
+        monkeypatch.delenv("AKSHARA_TOOLS_PER_TURN", raising=False)
+        assert default_tool_select() is None
+
+    def test_zero_and_width_pass_through(self, monkeypatch):
+        monkeypatch.setenv("AKSHARA_TOOLS_PER_TURN", "0")
+        assert default_tool_select() == 0
+        monkeypatch.setenv("AKSHARA_TOOLS_PER_TURN", "14")
+        assert default_tool_select() == 14
+
+    def test_non_integer_fails_loudly(self, monkeypatch):
+        monkeypatch.setenv("AKSHARA_TOOLS_PER_TURN", "seven")
+        with pytest.raises(ConfigError, match="must be an integer"):
+            default_tool_select()
+
+
+class TestDisabledToolsEnv:
+    def test_unset_means_nothing_disabled(self, monkeypatch):
+        monkeypatch.delenv("AKSHARA_DISABLED_TOOLS", raising=False)
+        assert disabled_tool_patterns() == []
+
+    def test_comma_split_strips_blanks(self, monkeypatch):
+        monkeypatch.setenv("AKSHARA_DISABLED_TOOLS",
+                           " web_fetch , browser_* ,, mcp__slack__* ,")
+        assert disabled_tool_patterns() == [
+            "web_fetch", "browser_*", "mcp__slack__*"]

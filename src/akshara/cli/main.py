@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import sys
 import time
@@ -18,6 +19,8 @@ from akshara.config import (
     _load_dotenv,
     default_context_window,
     default_model,
+    default_tool_select,
+    disabled_tool_patterns,
     load_settings,
 )
 from akshara.errors import ConfigError, ImageError, UserUnavailable
@@ -30,7 +33,11 @@ from akshara.session import SessionStore, apply_payload
 from akshara.subagent import SpawnSubagent, SubagentSpawner
 from akshara.tools import default_registry
 from akshara.tools.ask_user import AskUser, TerminalChannel
-from akshara.tools.selector import AUTO_SELECTION_THRESHOLD, enable_selection
+from akshara.tools.selector import (
+    AUTO_SELECTION_THRESHOLD,
+    DEFAULT_TOOLS_PER_TURN,
+    enable_selection,
+)
 
 
 def _guess_provider() -> str:
@@ -116,9 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
                         dest="tool_select",
                         help="dynamic tool loading: send only the K best-"
                              "matching tools each turn (BM25 over names/"
-                             "descriptions; list_available_tools discovers "
-                             "the rest). Auto-enables at K=7 above 20 tools; "
-                             "0 forces it off")
+                             "descriptions; core tools + "
+                             "list_available_tools always load). Auto-"
+                             "enables at K=12 above 20 tools; 0 forces it "
+                             "off. Same as $AKSHARA_TOOLS_PER_TURN")
     parser.add_argument("prompt_positional", nargs="?", metavar="PROMPT",
                         help="same as --prompt (akshara \"what is in README.md?\")")
     return parser
@@ -318,12 +326,36 @@ def main(argv: list[str] | None = None) -> int:
                 console.print(f"[dim]mcp '{cfg.name}': {len(names)} tool(s) "
                               f"-- {', '.join(names)}[/dim]")
 
+        # Operator kill-switch: AKSHARA_DISABLED_TOOLS globs unregister
+        # tools AFTER MCP registration (so whole mcp__ servers can go)
+        # and BEFORE catalog building -- a disabled tool must neither be
+        # sent, executed, suggested by discovery, nor pinned.
+        patterns = disabled_tool_patterns()
+        if patterns:
+            present = agent.registry.names()
+            doomed = sorted({n for pat in patterns
+                             for n in present if fnmatch.fnmatch(n, pat)})
+            for name in doomed:
+                agent.registry.unregister(name)
+            unmatched = [pat for pat in patterns
+                         if not any(fnmatch.fnmatch(n, pat) for n in present)]
+            if doomed:
+                console.print(f"[dim]disabled {len(doomed)} tool(s): "
+                              f"{', '.join(doomed)}[/dim]")
+            if unmatched:
+                console.print(f"[yellow]no tools match AKSHARA_DISABLED_"
+                              f"TOOLS entry: {', '.join(unmatched)}[/yellow]")
+
         # Dynamic tool loading (book ch12): decided AFTER MCP registration
-        # so external tools count toward the cliff threshold. --tool-select K
-        # forces it; 0 forces it off; unset auto-enables past the threshold.
+        # so external tools count toward the cliff threshold. Precedence
+        # is flag > env > auto: --tool-select K (backed by
+        # $AKSHARA_TOOLS_PER_TURN) forces it; 0 forces it off; both unset
+        # auto-enables past the threshold.
         width = args.tool_select
+        if width is None:
+            width = default_tool_select()
         if width is None and len(agent.registry) > AUTO_SELECTION_THRESHOLD:
-            width = 7
+            width = DEFAULT_TOOLS_PER_TURN
         if width:
             catalog, _ = enable_selection(agent.registry)
             agent.tool_catalog = catalog

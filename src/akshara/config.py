@@ -147,3 +147,36 @@ def default_context_window(name: str) -> int:
     if value := os.environ.get(env_var):
         return int(value)
     return _DEFAULT_CONTEXT_WINDOWS[name]
+
+
+def default_tool_select() -> int | None:
+    """Width for dynamic tool loading from $AKSHARA_TOOLS_PER_TURN.
+
+    Same semantics as --tool-select, which this backs when .env is more
+    convenient than a flag: K forces that width on every session, 0
+    forces selection off, and None (unset) leaves the auto-enable rule
+    to decide. A non-integer is config corruption -- fail loudly rather
+    than guess.
+    """
+    raw = os.environ.get("AKSHARA_TOOLS_PER_TURN")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(
+            f"AKSHARA_TOOLS_PER_TURN must be an integer, got {raw!r}"
+        ) from None
+
+
+def disabled_tool_patterns() -> list[str]:
+    """Glob patterns from $AKSHARA_DISABLED_TOOLS (comma-separated).
+
+    Each pattern is fnmatch-ed against registered tool names, so this
+    hides one tool ('web_fetch'), a family ('browser_*'), or a whole
+    MCP server ('mcp__slack__*'). Disabled tools are UNREGISTERED before
+    catalog building, so they are never sent, never executed, and never
+    suggested by list_available_tools either.
+    """
+    raw = os.environ.get("AKSHARA_DISABLED_TOOLS", "")
+    return [p.strip() for p in raw.split(",") if p.strip()]

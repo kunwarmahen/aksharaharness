@@ -244,18 +244,18 @@ class AsyncAgent:
         return [t.spec() for t in self._turn_tools]
 
     def _get_visible_tool(self, name: str):
-        """registry.get under selection; unselected-but-existing tools get
-        a model-actionable KeyError pointing at list_available_tools."""
+        """registry.get under selection -- with SOFT ADMISSION, the
+        deliberate twin of ``Agent._get_visible_tool`` (see there for
+        why calling an existing tool by exact name loads it on the spot
+        instead of erroring)."""
         if self._turn_tools is not None:
             for tool in self._turn_tools:
                 if tool.name == name:
                     return tool
-            if self.tool_catalog.get(name) is not None:
-                raise KeyError(
-                    f"tool {name!r} exists but is not loaded this turn "
-                    f"(only {self.tools_per_turn} load per turn) -- call "
-                    f"list_available_tools to see everything; discovered "
-                    f"tools become available next turn")
+            tool = self.tool_catalog.get(name)
+            if tool is not None:
+                self._turn_tools.append(tool)
+                return tool
             raise KeyError(f"no such tool: {name!r}") from None
         return self.registry.get(name)
 
