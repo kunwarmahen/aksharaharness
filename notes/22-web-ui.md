@@ -194,6 +194,31 @@ Ctrl-C takes, history resumable ([05-agent-loop.md](05-agent-loop.md)).
 In the page, Esc does the same as the ■ button whenever a turn is
 running and no modal owns the keyboard.
 
+## Starting and stopping without giving up your terminal
+
+`--web` in the foreground owns the tab it runs in, which is fine until
+you want the UI *and* your shell. `./start.sh web-start` (the launcher
+from [notes/06](06-cli.md)) detaches it: `nohup` + background, with
+three small files in `.akshara/` as the whole state machine —
+`web-ui.pid`, `web-ui.port`, `web-ui.log`.
+
+The parts that earned their keep:
+
+* **Health check before bind.** Startup polls `GET /` until the UI
+  answers (uv boot takes a few seconds) and only then prints the URL —
+  and if the port answers *before* launching, it refuses. A fresh
+  server would just die on bind; saying "something is already serving
+  on port 8321" beats a mysterious traceback in a log nobody tails.
+* **Status tells the truth about ownership.** `web-status` only claims
+  what the pid file proves. Port answering but no pid file? That's an
+  instance someone started by hand, and it says exactly that instead of
+  a bare "stopped" that would leave you hunting a process this script
+  can't stop.
+* **Stop takes the children.** `uv run` wraps python, so killing the
+  recorded pid can strand the server as an orphan: kill the children
+  first (`pkill -P`), then the pid, wait up to 5s, then SIGKILL. The
+  port-closed check after stop is the real test, not the exit code.
+
 ## What the tests pin
 
 52 new offline tests, no network, no key:

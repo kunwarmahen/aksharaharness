@@ -884,6 +884,14 @@ What you built maps almost one-to-one onto the big tools:
 | one wire dialect (yours: cloud or local) | several providers behind one interface, retries and failover |
 | printed dollars? none yet | cost accounting: `$` figures per turn and per session |
 
+One last convenience from the full repository: you never have to type
+those provider flags again. `./start.sh` asks how you want to run —
+local (free, private, on your machine), cloud (your key), or the browser
+version — and starts it. The browser version can even run in the
+background: `./start.sh web-start` detaches it so your terminal stays
+free, `./start.sh web-stop` ends it, `./start.sh web-status` tells you
+where it is.
+
 ## 10 · Where to go from here
 
 The repository this tutorial lives in is the same animal, grown up.

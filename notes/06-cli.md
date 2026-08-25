@@ -255,3 +255,30 @@ manager object, so there is no second bookkeeping to drift:
 * Connection failures print as errors (`could not connect 'x': …`),
   never as tracebacks — a bad command name is operator input to fix,
   not a bug to report.
+
+## One command to start it: `start.sh`
+
+The CLI grew more flags than a newcomer wants to memorize on day one,
+so the repo root ships a bash launcher that turns the common setups
+into names:
+
+```
+./start.sh              # numbered menu: local / cloud / web / local-web
+./start.sh local        # --provider ollama, after checking the server is up
+./start.sh cloud        # picks a dialect from whichever key .env actually has
+```
+
+Design rules that kept it honest:
+
+* **Presets are just pre-computed flags.** The script owns no logic of
+  its own — `local` becomes `--provider ollama`, everything else you
+  type passes through untouched (`./start.sh local --yolo "..."`), and
+  keys/models/URLs still come from `.env`. If a preset can't be
+  expressed as argv, it doesn't belong in the launcher.
+* **Provider detection mirrors `_guess_provider`, not its own ideas**:
+  Anthropic key first (env beats `.env`), then OpenAI-style, then
+  Responses — read out of `.env` with a line-scrape rather than
+  `source`, because values there carry trailing `# comments`.
+* **Warn, don't block.** Ollama unreachable gets a two-line hint
+  (`ollama serve`? `ollama pull <tag>`?) and starts anyway — maybe you
+  know something curl doesn't.
