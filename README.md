@@ -3,8 +3,9 @@
 A learning project: build the machinery behind tools like Claude Code —
 an agentic loop around a chat model, a JSON-Schema tool system, a
 permission gate, hand-parsed streaming — **without SDKs, pydantic, or
-frameworks**. Runtime deps: `httpx` and `rich` only; the optional
-browser UI adds `fastapi` + `uvicorn` behind a `[web]` extra.
+frameworks**. Runtime deps: `httpx` and `rich` only; optional extras
+add a browser UI (`fastapi` + `uvicorn`, `[web]`) and real-browser
+tools (`playwright`, `[browse]`) — each installs only what it needs.
 
 The code is the tutorial; [`notes/`](notes/) is the per-topic
 write-up. New to agents entirely?
@@ -161,9 +162,9 @@ and one that finishes ([notes/23](notes/23-glob.md)–
   long missions.
 - **web_fetch URL** pulls one http(s) address as readable text (HTML
   stripped to prose, JSON pretty-printed, 2 MB download cap). Fetch,
-  not search — and deliberately NOT read_only: it is the one built-in
-  that reaches the network from outside every sandbox wall, so it
-  gates like bash and a human approves the address.
+  not search — and deliberately NOT read_only: it reaches the network
+  from outside every sandbox wall, so it gates like bash and a human
+  approves the address.
 - **bash_start / bash_poll / bash_kill** run commands that outlive one
   tool call — dev servers, watchers, long builds — with output teeing
   to `.akshara/jobs/<id>.log`. Jobs always run as plain env-scrubbed
@@ -173,6 +174,16 @@ and one that finishes ([notes/23](notes/23-glob.md)–
   its sandbox — screenshots, diagrams, charts it just generated. The
   image rides history right after the tool result on all three wire
   dialects ([notes/27](notes/27-read-image.md)).
+- **browser_open / browser_click / browser_fill / browser_close**
+  drive a real headless Chromium (`[browse]` optional extra:
+  `uv sync --extra browse && uv run playwright install chromium`).
+  JavaScript runs, so JS-rendered apps work where web_fetch sees an
+  empty shell; every action returns readable prose plus numbered
+  element refs (`[e1]`, `[e2]`, …) harvested from the live DOM, and
+  clicks/fills take a ref and return the refreshed page. Same egress
+  rule as web_fetch — all four gate. Installing the extra IS the
+  opt-in: the four register only when playwright is present
+  ([notes/28](notes/28-browser-tools.md)).
 
 REPL commands: `/help /model /provider /tools /history /usage /save /load
 /compact /clear /image /build /quit` (`//text` sends a literal leading slash; a
@@ -325,11 +336,16 @@ src/akshara/
 │   │               one tool call, log teeing to .akshara/jobs/, process-group
 │   │               kill; plain subprocesses by design -> always gate ([notes/26](notes/26-background-bash.md))
 │   ├── web_fetch.py fetch ONE url as readable text (stdlib HTML stripping,
-│   │               2 MB cap, head-tail clip) — the only built-in that reaches
-│   │               the network, hence gated like bash ([notes/25](notes/25-web-fetch.md))
+│   │               2 MB cap, head-tail clip) — network egress, gated like
+│   │               bash ([notes/25](notes/25-web-fetch.md))
 │   ├── read_image.py the agent looking at a picture BY ITSELF: returns a
 │   │               ToolOutput; the loop hoists images onto history after the
 │   │               result ([notes/27](notes/27-read-image.md))
+│   ├── browser.py  browser_open/click/fill/close — a real headless Chromium
+│   │               behind the [browse] extra: JS-rendered pages come back as
+│   │               text + numbered element refs; registers only when playwright
+│   │               imports, so the tool count never moves uninvited
+│   │               ([notes/28](notes/28-browser-tools.md))
 │   ├── selector.py dynamic tool loading: BM25 ToolCatalog over name+
 │   │               description, transcript-derived query, pinned
 │   │               list_available_tools discovery hatch ([notes/17](notes/17-tool-selection.md))
@@ -444,7 +460,7 @@ end ([notes/03](notes/03-sse-and-collect.md)).
 ## Run & test
 
 ```bash
-uv run pytest -q                 # full offline suite: 564 tests, NO network, NO key
+uv run pytest -q                 # full offline suite: 592 tests, NO network, NO key
 
 # everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
 uv run python examples/one_shot.py "Why is the sky blue?"
@@ -473,13 +489,15 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 564 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 592 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The
 browser UI runs fully offline as well: FastAPI's test client drives the
 real routes against scripted turns — and web_fetch does the same trick
-with a mocked transport behind its real request path.
+with a mocked transport behind its real request path. The browser_*
+family goes further and stays green in BOTH worlds: without playwright
+(fakes carry the session) and with the extra synced.
 
 Everything above has also been exercised against real providers —
 all three dialects via OpenRouter (cloud models) plus local Ollama
@@ -487,7 +505,9 @@ for end-to-end runs of sandboxing, build mode, MCP, sub-agents,
 evals, caching, hooks, vision, `ask_user`, the web UI, and the
 self-reliance set (background jobs + a localhost web_fetch + todo
 tracking on `qwen3.8`; `read_image` vision on `gemma4:12b` — see the
-receipts closing notes/24–27). The
+receipts closing notes/24–27), and the browser_* family driving a
+JavaScript-rendered local page end to end on `qwen3.8` — a page
+web_fetch provably cannot read ([notes/28](notes/28-browser-tools.md)). The
 `examples/` demos rerun most of it on demand. Live testing shook out
 four real bugs along the way, all fixed and now regression-tested:
 gateway `null` token counters poisoning `Usage.add()`, an orphaned

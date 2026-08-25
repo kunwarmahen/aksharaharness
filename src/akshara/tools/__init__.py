@@ -6,6 +6,11 @@ bash), RUN LONG (bash_start/poll/kill), LOOK OUT (web_fetch),
 REMEMBER (write_note/recall_notes for durable facts,
 todo_write/todo_read for live plan state). Anything beyond these is
 MCP's job -- that's what the mcp__server__tool namespace is for.
+
+One family self-selects: OPERATE (browser_open/click/fill/close on a
+headless Chromium) registers ONLY when playwright is importable -- the
+optional ``[browse]`` extra is its own opt-in. Users who never asked
+for a browser keep sixteen tools; installing it brings twenty.
 """
 
 from __future__ import annotations
@@ -19,6 +24,13 @@ from akshara.tools.background import (
     JobManager,
 )
 from akshara.tools.base import Tool, ToolContext, ToolOutput, ToolRegistry
+from akshara.tools.browser import (
+    BrowserClick,
+    BrowserClose,
+    BrowserFill,
+    BrowserOpen,
+    BrowserSession,
+)
 from akshara.tools.fs import EditFile, ListDir, ReadFile, WriteFile
 from akshara.tools.glob import Glob
 from akshara.tools.memory import RecallNotes, WriteNote
@@ -34,6 +46,11 @@ __all__ = [
     "BashKill",
     "BashPoll",
     "BashStart",
+    "BrowserClick",
+    "BrowserClose",
+    "BrowserFill",
+    "BrowserOpen",
+    "BrowserSession",
     "EditFile",
     "Glob",
     "Grep",
@@ -66,10 +83,15 @@ def default_registry(sandbox: ToolSandbox | None = None) -> ToolRegistry:
     sandbox by design, so they gate individually instead of riding
     trust_sandbox's auto-approval.
 
+    The browser_* family (headless Chromium) joins only when playwright
+    is importable -- the [browse] extra is its own opt-in. All four are
+    network egress and gate like web_fetch.
+
     read_only flags drive permission gating automatically: read_file,
     list_dir, glob, grep, read_image, recall_notes, todo_read,
     bash_poll auto-approve; write_file, edit_file, bash, bash_start,
-    bash_kill, web_fetch (network egress), write_note, todo_write
+    bash_kill, web_fetch (network egress), browser_open/click/fill/
+    close (when registered -- same egress rule), write_note, todo_write
     prompt.
     """
     registry = ToolRegistry()
@@ -82,5 +104,8 @@ def default_registry(sandbox: ToolSandbox | None = None) -> ToolRegistry:
                  WebFetch(),
                  WriteNote(), RecallNotes(),
                  TodoWrite(), TodoRead()):
+        registry.register(tool)
+    from akshara.tools.browser import browser_tools
+    for tool in browser_tools():  # () unless the [browse] extra is installed
         registry.register(tool)
     return registry
