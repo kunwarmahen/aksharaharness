@@ -23,11 +23,14 @@ from akshara.mcp import (
     SUPPORTED_VERSIONS,
     MCPError,
     MCPServerConfig,
+    forget_server,
     load_mcp_configs,
+    load_remembered,
     register_mcp,
+    remember_server,
 )
 from akshara.permissions import yolo
-from akshara.tools.base import ToolContext, ToolRegistry
+from akshara.tools.base import Tool, ToolContext, ToolRegistry
 
 
 def write_server(tmp_path: Path, body: str, name: str = "srv") -> MCPServerConfig:
@@ -530,3 +533,269 @@ class TestHttpTransport:
             assert "42" in response.message.text()
         finally:
             session.close()
+
+
+# ---- runtime management: MCPManager ----------------------------------------
+#
+# Transport behavior is pinned above against real subprocesses; these
+# cover the MANAGER semantics (add/remove/toggle/remember) with an
+# injected connector, plus one end-to-end pass through a real stdio
+# server to prove connect->register->disconnect reaps the child.
+
+
+class FakeSession:
+    """Stands in for MCPSession/MCPHttpSession: records close() calls,
+    reports healthy until closed."""
+
+    def __init__(self, config):
+        self.config = config
+        self.closed = False
+
+    def healthy(self):
+        return not self.closed
+
+    def close(self):
+        self.closed = True
+
+
+class FakeTool(Tool):
+    name = "x"
+    description = "fake mcp tool"
+    parameters = {"type": "object", "properties": {}}
+    read_only = True
+
+    def __init__(self, session, raw_name, server):
+        self.name = f"mcp__{server}__{raw_name}"
+        self.raw_name = raw_name
+
+    def summary(self, args, ctx):
+        return self.name
+
+    def run(self, args, ctx):
+        return "ran"
+
+
+def fake_connector_factory(fail_names=(), collide_at=None):
+    """Connector stub: every config gets a FakeSession and two tools.
+    ``fail_names`` raise MCPError (connection refused); ``collide_at``
+    makes registration blow up mid-loop (duplicate tool name)."""
+    calls: list[str] = []
+    created: list[FakeSession] = []
+
+    def connector(config, timeout=30.0):
+        calls.append(config.name)
+        if config.name in fail_names:
+            raise MCPError(f"cannot spawn mcp server {config.name!r}")
+        session = FakeSession(config)
+        created.append(session)
+        if collide_at == config.name:
+            return session, [FakeTool(session, "echo", config.name),
+                             FakeTool(session, "echo", config.name)]
+        return session, [FakeTool(session, "echo", config.name),
+                         FakeTool(session, "ping", config.name)]
+
+    connector.calls = calls
+    connector.created = created
+    return connector
+
+
+def _cfg(name, url=None):
+    if url:
+        return MCPServerConfig(name=name, url=url)
+    return MCPServerConfig(name=name, command="python", args=["srv.py"])
+
+
+class TestMCPManager:
+    def _manager(self, tmp_path, registry=None, **kw):
+        from akshara.mcp import MCPManager
+
+        registry = registry or ToolRegistry()
+        return MCPManager(
+            registry, memory_path=tmp_path / ".akshara" / "mcp.json",
+            connector=fake_connector_factory(**kw)), registry
+
+    def test_connect_registers_qualified_tools_and_reports_status(self, tmp_path):
+        manager, registry = self._manager(tmp_path)
+        names = manager.connect(_cfg("tiny"))
+        assert sorted(names) == ["mcp__tiny__echo", "mcp__tiny__ping"]
+        assert registry.get("mcp__tiny__echo").raw_name == "echo"
+        info = manager.servers()[0]
+        assert info["name"] == "tiny"
+        assert info["transport"] == "stdio"
+        assert info["healthy"] is True
+        assert info["tools"] == 2
+        assert info["disabled"] == 0
+        assert info["remembered"] is False
+        assert info["target"] == "python srv.py"
+
+    def test_http_transport_shape_in_listing(self, tmp_path):
+        manager, _ = self._manager(tmp_path)
+        manager.connect(_cfg("remote", url="http://127.0.0.1:9/mcp"))
+        info = manager.servers()[0]
+        assert info["transport"] == "http"
+        assert info["target"] == "http://127.0.0.1:9/mcp"
+
+    def test_duplicate_server_is_refused_not_clobbered(self, tmp_path):
+        manager, _ = self._manager(tmp_path)
+        manager.connect(_cfg("tiny"))
+        with pytest.raises(MCPError, match="already connected"):
+            manager.connect(_cfg("tiny"))
+
+    def test_connection_failure_propagates_and_registers_nothing(self, tmp_path):
+        manager, registry = self._manager(tmp_path, fail_names=("dead",))
+        with pytest.raises(MCPError, match="dead"):
+            manager.connect(_cfg("dead"))
+        assert "mcp__dead__echo" not in registry
+        assert manager.sessions == {}
+
+    def test_mid_register_collision_closes_the_session(self, tmp_path):
+        """If the second wrapper's name collides, the first is already
+        registered -- cleanup must close the transport so no orphan
+        process outlives the failed add."""
+        connector = fake_connector_factory(collide_at="dup")
+        from akshara.mcp import MCPManager
+
+        registry = ToolRegistry()
+        manager = MCPManager(registry, connector=connector)
+        with pytest.raises(ValueError, match="duplicate"):
+            manager.connect(_cfg("dup"))
+        assert manager.sessions == {}
+        assert manager.tool_names == {}
+        assert "mcp__dup__echo" not in registry  # even the first one is gone
+        assert connector.created[0].closed is True
+
+    def test_disconnect_unregisters_and_closes(self, tmp_path):
+        manager, registry = self._manager(tmp_path)
+        manager.connect(_cfg("tiny"))
+        session = manager.sessions["tiny"]
+        removed = manager.disconnect("tiny")
+        assert removed == 2
+        assert session.closed is True
+        assert "mcp__tiny__echo" not in registry
+        assert manager.tool_names == {}
+        with pytest.raises(MCPError, match="no mcp server named"):
+            manager.disconnect("ghost")
+
+    def test_set_enabled_soft_toggles_whole_server(self, tmp_path):
+        manager, registry = self._manager(tmp_path)
+        manager.connect(_cfg("tiny"))
+        assert manager.set_enabled("tiny", False) == 2
+        assert registry.is_disabled("mcp__tiny__echo")
+        assert registry.is_disabled("mcp__tiny__ping")
+        # soft: still registered, still listed
+        assert len(registry.names()) == 2
+        assert registry.disabled_names() == ["mcp__tiny__echo",
+                                             "mcp__tiny__ping"]
+        manager.set_enabled("tiny", True)
+        assert registry.disabled_names() == []
+        with pytest.raises(MCPError):
+            manager.set_enabled("ghost", False)
+
+    def test_remember_persists_and_disconnect_forgets(self, tmp_path):
+        manager, _ = self._manager(tmp_path)
+        path = manager.memory_path
+        manager.connect(_cfg("tiny"), remember=True)
+        assert manager.pinned == {"tiny"}
+        saved = load_mcp_configs(path)
+        assert [c.name for c in saved] == ["tiny"]
+        assert saved[0].command == "python"
+        # reconnecting marks remembered via the file check too
+        manager.disconnect("tiny")
+        assert path.exists() is False or \
+            all(c.name != "tiny" for c in load_remembered(path))
+        assert manager.pinned == set()
+
+    def test_catalog_refresh_keeps_pins_and_adds_new_tools(self, tmp_path):
+        """Selection stays correct after membership changes: rebuilt
+        index contains the new tools, custom pins survive."""
+        from types import SimpleNamespace
+
+        from akshara.tools.selector import enable_selection
+
+        registry = ToolRegistry()
+        for i in range(3):
+            registry.register(_filler(f"t{i}"))
+        catalog, _ = enable_selection(registry)
+        catalog.must_include = ("t0",)
+        agent_stub = SimpleNamespace(tool_catalog=catalog)
+        from akshara.mcp import MCPManager
+
+        manager = MCPManager(registry, agent=agent_stub,
+                             connector=fake_connector_factory())
+        manager.connect(_cfg("tiny"))
+        new_catalog = agent_stub.tool_catalog
+        assert new_catalog is not catalog
+        assert "mcp__tiny__echo" in {t.name for t in new_catalog.tools}
+        assert new_catalog.must_include == ("t0",)
+
+
+def _filler(name):
+    attrs = {
+        "name": name, "description": f"{name}: filler utility",
+        "parameters": {"type": "object", "properties": {}},
+        "read_only": True,
+        "summary": lambda self, args, ctx: name,
+        "run": lambda self, args, ctx: "",
+    }
+    return type(name.title().replace("_", ""), (Tool,), attrs)()
+
+
+class TestRememberedFile:
+    def test_missing_file_loads_empty(self, tmp_path):
+        assert load_remembered(tmp_path / "nope.json") == []
+
+    def test_corrupt_file_is_loud(self, tmp_path):
+        path = tmp_path / "mcp.json"
+        path.write_text("{not json")
+        with pytest.raises(MCPError, match="not valid JSON"):
+            load_remembered(path)
+
+    def test_round_trip_preserves_command_args_env_url(self, tmp_path):
+        path = tmp_path / "sub" / "mcp.json"  # parents created lazily
+        remember_server(MCPServerConfig(name="a", command="py",
+                                        args=["s.py"], env={"K": "V"}), path)
+        remember_server(MCPServerConfig(name="b", url="http://x/mcp"), path)
+        configs = {c.name: c for c in load_remembered(path)}
+        assert set(configs) == {"a", "b"}
+        assert configs["a"].command == "py"
+        assert configs["a"].args == ["s.py"]
+        assert configs["a"].env == {"K": "V"}
+        assert configs["b"].url == "http://x/mcp"
+
+    def test_upsert_replaces_the_whole_entry(self, tmp_path):
+        """Re-saving a name overwrites completely -- partial updates are
+        not a thing, the last 'remember' wins verbatim."""
+        path = tmp_path / "mcp.json"
+        remember_server(MCPServerConfig(name="a", command="py",
+                                        args=["s.py"], env={"K": "V"}), path)
+        remember_server(MCPServerConfig(name="a", command="py3"), path)
+        (cfg,) = load_remembered(path)
+        assert cfg.command == "py3"
+        assert cfg.args == []
+        assert cfg.env is None
+
+    def test_forget_reports_presence_honestly(self, tmp_path):
+        path = tmp_path / "mcp.json"
+        assert forget_server("a", path) is False  # no file at all
+        remember_server(MCPServerConfig(name="a", url="http://x"), path)
+        assert forget_server("ghost", path) is False
+        assert forget_server("a", path) is True
+        assert load_remembered(path) == []
+
+
+class TestManagerEndToEnd:
+    """One pass through the REAL stdio transport, because 'the child is
+    reaped' is a claim about processes, not about dicts."""
+
+    def test_connect_then_disconnect_with_real_server(self, tmp_path):
+        from akshara.mcp import MCPManager, connect_mcp
+
+        cfg = write_server(tmp_path, STANDARD_BODY)
+        registry = ToolRegistry()
+        manager = MCPManager(registry, connector=connect_mcp)
+        names = manager.connect(cfg, timeout=10.0)
+        assert sorted(names) == sorted(registry.names())  # listing order != sorted
+        assert manager.servers()[0]["healthy"] is True
+        assert manager.disconnect(cfg.name) > 0
+        assert registry.names() == []
+        assert manager.servers() == []

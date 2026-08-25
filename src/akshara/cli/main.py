@@ -25,7 +25,8 @@ from akshara.config import (
 )
 from akshara.errors import ConfigError, ImageError, UserUnavailable
 from akshara.images import load_image_block
-from akshara.mcp import MCPError, MCPSession, load_mcp_configs, register_mcp
+from akshara.mcp import (MCPError, MCPManager, load_mcp_configs,
+                         load_remembered, remembered_path)
 from akshara.permissions import SwitchableGate, trust_sandbox, yolo
 from akshara.providers import get_provider
 from akshara.sandbox import autodetect
@@ -301,13 +302,18 @@ def main(argv: list[str] | None = None) -> int:
         agent.registry.register(AskUser(None))
 
     store = SessionStore(Path(args.cwd) / ".akshara" / "session.sqlite3")
-    repl = Repl(agent, console, store=store, sandbox=sandbox)
+    # The manager owns live MCP connections so servers can be added,
+    # removed, and toggled MID-session (web panel + REPL /mcp), not just
+    # wired at startup. It doubles as the startup bookkeeper below.
+    mcp_manager = MCPManager(agent.registry, agent=agent,
+                             memory_path=remembered_path(Path(args.cwd)))
+    repl = Repl(agent, console, store=store, sandbox=sandbox,
+                mcp=mcp_manager)
 
     # MCP servers: parse errors are fatal (exit 2); connection failures
     # only warn -- a dead optional integration shouldn't kill the
-    # session. The finally below closes whatever was opened on EVERY
-    # exit path, including the early returns in here.
-    sessions: list[MCPSession] = []
+    # session. The manager's shutdown in the finally below closes every
+    # opened session on EVERY exit path, including early returns here.
     try:
         for path in args.mcp_config:
             try:
@@ -317,14 +323,34 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             for cfg in configs:
                 try:
-                    session, names = register_mcp(agent.registry, cfg)
+                    names = mcp_manager.connect(cfg)
                 except MCPError as exc:
                     console.print(f"[yellow]mcp '{cfg.name}' unavailable: "
                                   f"{exc}[/yellow]")
                     continue
-                sessions.append(session)
                 console.print(f"[dim]mcp '{cfg.name}': {len(names)} tool(s) "
                               f"-- {', '.join(names)}[/dim]")
+
+        # Servers saved by earlier sessions' "remember this server"
+        # reconnect here, after explicit --mcp-config files (a name
+        # already connected via flags wins; its saved entry just sits).
+        try:
+            saved = load_remembered(mcp_manager.memory_path)
+        except MCPError as exc:
+            console.print(f"[yellow]{exc}; ignoring remembered "
+                          "servers[/yellow]")
+            saved = []
+        for cfg in saved:
+            if cfg.name in mcp_manager.sessions:
+                continue
+            try:
+                names = mcp_manager.connect(cfg)
+            except MCPError as exc:
+                console.print(f"[yellow]mcp '{cfg.name}' unavailable: "
+                              f"{exc}[/yellow]")
+                continue
+            console.print(f"[dim]mcp '{cfg.name}' (remembered): "
+                          f"{len(names)} tool(s)[/dim]")
 
         # Operator kill-switch: AKSHARA_DISABLED_TOOLS globs unregister
         # tools AFTER MCP registration (so whole mcp__ servers can go)
@@ -382,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
         if web_session is not None:
             from akshara.web.server import launch
             return launch(web_session, agent, store,
-                          host=args.host, port=args.port)
+                          host=args.host, port=args.port, mcp=mcp_manager)
 
         if args.prompt is not None or args.prompt_positional:
             try:
@@ -407,8 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         repl.run()
         return 0
     finally:
-        for session in sessions:
-            session.close()
+        mcp_manager.shutdown()
 
 
 if __name__ == "__main__":

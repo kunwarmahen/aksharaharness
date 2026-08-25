@@ -665,10 +665,11 @@ $("#btn-clear").onclick = async () => {
 
 /* ---------- tools panel ---------- */
 
-/* Every registered tool, with a live switch each. Toggles POST
-   immediately and are safe mid-turn: the loop consults the registry per
-   call, so pulling `bash` cuts the very next bash call of a running
-   turn. The panel sits UNDER the approval modal on purpose -- an
+/* Two sections: mcp servers on top (connect new ones, soft-toggle or
+   remove existing), then every registered tool with a live switch each.
+   Toggles POST immediately and are safe mid-turn: the loop consults the
+   registry per call, so pulling `bash` cuts the very next bash call of a
+   running turn. The panel sits UNDER the approval modal on purpose -- an
    approval can still pop over it while you're in here. */
 
 $("#chip-tools").onclick = openToolsPanel;
@@ -681,15 +682,202 @@ async function openToolsPanel() {
   $("#tools-backdrop").classList.remove("hidden");
   const rows = $("#tools-rows");
   rows.textContent = "loading…";
-  let tools;
+
+  let servers = null, tools = null;
   try {
-    const res = await fetch("/api/tools");
-    tools = res.ok ? await res.json() : null;
-  } catch { tools = null; }
+    const [mcpRes, toolRes] = await Promise.all([
+      fetch("/api/mcp"), fetch("/api/tools")]);
+    // A session without an mcp manager answers 400 -- hide the section.
+    servers = mcpRes.ok ? (await mcpRes.json()).servers : null;
+    tools = toolRes.ok ? await toolRes.json() : null;
+  } catch { /* both stay null -> per-section error text */ }
+
+  $("#mcp-section").classList.toggle("hidden", servers === null);
+  collapseAddForm();
+  renderMCPRows(servers);
+
   if (!tools) { rows.textContent = "could not load tools"; return; }
   rows.textContent = "";
   for (const t of tools) rows.append(toolRow(t));
 }
+
+/* ---- mcp servers ---- */
+
+async function renderMCPRows(servers) {
+  const rows = $("#mcp-rows");
+  if (!servers) { rows.textContent = ""; return; } // no manager / fetch failed
+  rows.textContent = "";
+  if (!servers.length) {
+    rows.innerHTML = '<div class="mcp-empty">no servers connected — add one above</div>';
+    return;
+  }
+  for (const s of servers) rows.append(mcpRow(s));
+}
+
+function mcpRow(s) {
+  const row = document.createElement("div");
+  row.className = "mcp-row" + (s.enabled === false ? " off" : "");
+
+  const dot = document.createElement("span");
+  dot.className = "dot" + (s.healthy ? "" : " dead");
+  dot.title = s.healthy ? "connected" : "not responding";
+  row.append(dot);
+
+  const name = document.createElement("div");
+  name.innerHTML = `<span class="t-name">${esc(s.name)}</span>`
+    + `<span class="t-badge">${esc(s.transport)}</span>`
+    + (s.remembered ? '<span class="t-ro">saved</span>' : "");
+  name.title = s.target;
+  row.append(name);
+
+  const count = document.createElement("div");
+  count.className = "t-desc";
+  count.textContent = `${s.tools} tool(s)` +
+    (s.disabled ? `, ${s.disabled} off` : "") + (s.healthy ? "" : " — unreachable");
+  row.append(count);
+
+  const sw = document.createElement("label");
+  sw.className = "t-switch";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  // on while ANY of the server's tools is active; flipping off pulls all
+  box.checked = s.disabled < s.tools;
+  box.title = "soft-switch this server's whole toolset";
+  box.onchange = async () => {
+    const ok = await post("/api/mcp/toggle", { name: s.name, enabled: box.checked });
+    if (!ok) { box.checked = !box.checked; return; } // refused; revert
+    applyHeader(ok);
+    refreshMCPRows();
+    toast(box.checked ? `${s.name} back on` :
+      `${s.name} off — its tools now fail as data until re-enabled`);
+  };
+  const knob = document.createElement("span");
+  knob.className = "knob";
+  sw.append(box, knob);
+  row.append(sw);
+
+  const rm = document.createElement("button");
+  rm.className = "m-btn danger mcp-remove";
+  rm.textContent = "✕";
+  rm.title = "disconnect this server and remove its tools";
+  rm.onclick = async () => {
+    if (rm.dataset.armed !== "1") {          // two-step confirm: no native dialogs
+      rm.dataset.armed = "1";
+      rm.textContent = "sure?";
+      setTimeout(() => { rm.dataset.armed = ""; rm.textContent = "✕"; }, 2500);
+      return;
+    }
+    const out = await post("/api/mcp/remove", { name: s.name });
+    if (!out) return;
+    applyHeader(out);
+    toast(`removed ${s.name} — ${out.removed} tool(s) gone`);
+    refreshMCPRows();
+  };
+  row.append(rm);
+  return row;
+}
+
+async function refreshMCPRows() {
+  try {
+    const res = await fetch("/api/mcp");
+    if (res.ok) await renderMCPRows((await res.json()).servers);
+  } catch { /* panel may be closing anyway */ }
+}
+
+/* the add form: fields mode by default, paste-json for power users */
+
+let mcpMode = "fields";
+$("#mcp-add-btn").onclick = () => {
+  $("#mcp-add-form").classList.remove("hidden");
+  $("#mcp-add-btn").classList.add("hidden");
+  $("#mcp-error").classList.add("hidden");
+};
+$("#mcp-cancel-add").onclick = collapseAddForm;
+document.querySelectorAll(".m-tab").forEach((tab) => {
+  tab.onclick = () => {
+    mcpMode = tab.dataset.mode;
+    document.querySelectorAll(".m-tab").forEach((t) =>
+      t.classList.toggle("active", t === tab));
+    $("#mcp-fields").classList.toggle("hidden", mcpMode !== "fields");
+    $("#mcp-json").classList.toggle("hidden", mcpMode !== "json");
+  };
+});
+document.querySelectorAll('input[name="mcp-transport"]').forEach((radio) => {
+  radio.onchange = () => {
+    const http = document.querySelector('input[name="mcp-transport"]:checked').value === "http";
+    $("#mcp-command").classList.toggle("hidden", http);
+    $("#mcp-url").classList.toggle("hidden", !http);
+  };
+});
+
+function collapseAddForm() {
+  $("#mcp-add-form").classList.add("hidden");
+  $("#mcp-add-btn").classList.remove("hidden");
+}
+
+// whitespace split that respects "quoted arguments" -- good enough for
+// commands with spaces in paths; exotic shells should use the json mode
+function splitCommand(text) {
+  const out = []; let cur = "", q = null;
+  for (const ch of text.trim()) {
+    if (q) { if (ch === q) q = null; else cur += ch; }
+    else if (ch === '"' || ch === "'") q = ch;
+    else if (/\s/.test(ch)) { if (cur) { out.push(cur); cur = ""; } }
+    else cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+$("#mcp-submit").onclick = async () => {
+  const err = $("#mcp-error");
+  err.classList.add("hidden");
+  const remember = $("#mcp-remember").checked;
+  const body = mcpMode === "json"
+    ? { config: $("#mcp-json-text").value, remember }
+    : (() => {
+        const transport = document.querySelector(
+          'input[name="mcp-transport"]:checked').value;
+        const b = { name: $("#mcp-name").value, remember };
+        if (transport === "http") b.url = $("#mcp-url").value.trim();
+        else {
+          const parts = splitCommand($("#mcp-command").value);
+          if (!parts.length) {
+            err.textContent = "enter the command to run";
+            err.classList.remove("hidden");
+            return null;
+          }
+          b.command = parts[0];
+          if (parts.length > 1) b.args = parts.slice(1);
+        }
+        const env = {};
+        for (const line of $("#mcp-env").value.split("\n")) {
+          const i = line.indexOf("=");
+          if (i > 0 && line.slice(0, i).trim()) env[line.slice(0, i).trim()] = line.slice(i + 1);
+        }
+        if (Object.keys(env).length) b.env = env;
+        return b;
+      })();
+  if (body === null) return;
+
+  const out = await post("/api/mcp/add", body);
+  if (!out) return; // validation failure -- post() already toasted the detail
+  const failed = (out.results || []).filter((r) => !r.ok);
+  const added = (out.results || []).filter((r) => r.ok);
+  applyHeader(out);
+  if (added.length) {
+    toast(added.map((r) => `${r.name}: ${r.tools} tool(s)`).join(", ")
+      + ` connected${remember ? " · saved" : ""}`);
+    collapseAddForm();
+    $("#mcp-name").value = $("#mcp-command").value =
+      $("#mcp-url").value = $("#mcp-env").value = $("#mcp-json-text").value = "";
+  }
+  if (failed.length) {
+    err.textContent = failed.map((r) => `${r.name}: ${r.error}`).join("\n");
+    err.classList.remove("hidden");
+  }
+  refreshMCPRows();
+};
 
 function toolRow(t) {
   const row = document.createElement("div");

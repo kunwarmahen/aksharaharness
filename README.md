@@ -124,6 +124,15 @@ uv run akshara --mcp-config mcp.json          # connect + discover at startup
 python examples/tiny_mcp_server.py --http     # the same server over Streamable HTTP
 ```
 
+Servers are runtime furniture, not just startup wiring: `/mcp` lists
+them, `/mcp add NAME URL` (or `NAME COMMAND [ARGS...]`) connects one
+mid-session — asking whether to remember it in `.akshara/mcp.json` for
+future launches — and `/mcp off|on NAME` / `/mcp remove NAME` toggle or
+tear down. The web panel's "servers & tools" section does the same:
+health dots, add-by-form or paste-JSON, per-server switches, remove.
+Disabling keeps the process warm; removing kills it and forgets any
+saved entry ([notes/09](notes/09-mcp.md)).
+
 Sub-agents (agent-as-tool: fresh-context children with a filtered tool
 catalog, per-session spawn budget, compact results — child streams tee
 to the terminal live):
@@ -139,7 +148,10 @@ code blocks — by a ~150-line escape-first renderer, no library), tool
 cards, permission prompts with approve/deny/**edit**, image attachments,
 save/load/compact/model switches, a permission-mode chip (ask ⇄ yolo,
 switchable mid-turn like the REPL's `/yolo`), a tools panel (every
-registered tool, switchable off/on mid-run like the REPL's `/tools`),
+registered tool, switchable off/on mid-run like the REPL's `/tools`)
+with an MCP servers section above it — health dots, add by form or
+paste-JSON, per-server switches, remove; same powers as `/mcp`
+mid-session, and remembered servers auto-reconnect on future launches,
 a live context-pressure meter (amber at 60%, red at 80% — where
 auto-compaction starts caring), and a ■ Stop button that lands
 mid-sentence, not just between tool calls (Esc works too). Install the
@@ -328,7 +340,9 @@ src/akshara/
 ├── session.py      SQLite checkpoints: append-only versions, /save /load --resume
 ├── mcp.py          MCP client, hand-rolled JSON-RPC over stdio AND
 │                   Streamable HTTP (SSE responses via providers/sse.py):
-│                   handshake, tools/list, tools/call ([notes/09](notes/09-mcp.md))
+│                   handshake, tools/list, tools/call; MCPManager adds/
+│                   removes/toggles servers mid-session, .akshara/mcp.json
+│                   remembers them ([notes/09](notes/09-mcp.md))
 ├── evals.py        trajectory evals: completion/correctness/process/cost,
 │                   recording tool proxy, LLM judge; AsyncEvalRunner twin
 │                   runs cases concurrently, shared scoring ([notes/10](notes/10-evals.md))
@@ -490,7 +504,7 @@ end ([notes/03](notes/03-sse-and-collect.md)).
 ## Run & test
 
 ```bash
-uv run pytest -q                 # full offline suite: 650 tests, NO network, NO key
+uv run pytest -q                 # full offline suite: 681 tests, NO network, NO key
 
 # everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
 uv run python examples/one_shot.py "Why is the sky blue?"
@@ -519,7 +533,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 650 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 681 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The

@@ -864,6 +864,15 @@ a tool off for the rest of the session and `/tools on bash` brings it
 back — handy when you want the agent to answer without touching
 anything. The web UI's tools panel is the same idea with switches.
 
+One more superpower lives in the full harness: **plugging in new hands
+while it runs**. MCP is a standard plug for other people's tools — say
+a GitHub server or a database server — and the full harness can attach
+one mid-conversation (`/mcp add NAME COMMAND [ARGS...]`), ask it what
+it can do, and detach it again (`/mcp remove NAME`). It will offer to
+remember the server so it reconnects by itself next time; the browser
+UI has the same buttons in its panel. Think "USB for agent skills" —
+you never restart to add hardware.
+
 What you built maps almost one-to-one onto the big tools:
 
 | Your mini-harness | What the real ones add |
@@ -892,6 +901,7 @@ Each topic has a short, plain-written note with the war stories:
 | Reliability: retries, failover, compaction | [notes/07](notes/07-reliability-and-scale.md) |
 | Sub-agents (agents hiring agents) | [notes/08](notes/08-sub-agents.md) |
 | MCP (universal plug for tools) | [notes/09](notes/09-mcp.md) |
+| Plugging servers in and out while it runs (`/mcp`) | [notes/09](notes/09-mcp.md), the "Runtime management" section |
 | Grading agents automatically (evals) | [notes/10](notes/10-evals.md) |
 | Many conversations at once (async) | [notes/11](notes/11-async.md) |
 | Letting it BUILD software | [notes/12](notes/12-builder.md) |

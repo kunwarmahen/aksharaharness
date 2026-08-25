@@ -224,3 +224,34 @@ Design points that carried over from `/yolo`:
   eats it — same failure mode as model output eating `[TODO]`, fixed
   the same way (`\[off]`). The CLI keeps re-learning that brackets are
   load-bearing.
+
+## /mcp — servers as runtime furniture
+
+The MCP chapter wired servers at startup ([09-mcp.md](09-mcp.md));
+`MCPManager` makes that wiring live, and `/mcp` is its terminal face.
+The web panel's "servers & tools" section and these commands share one
+manager object, so there is no second bookkeeping to drift:
+
+```
+/mcp                          # list: tiny (stdio) · saved — python srv.py — 2 tool(s)
+/mcp off tiny   /mcp on tiny  # soft toggle: tools disabled per call, process stays warm
+/mcp add tiny python srv.py   # connect NOW; http://… target means Streamable HTTP
+/mcp remove tiny              # kill child + unregister + forget any saved entry
+```
+
+* **The listing shows health honestly** — an unhealthy stdio child gets
+  a red `\[down]` mark (escaped from rich markup, again), and a server
+  remembered in `.akshara/mcp.json` is tagged `saved`.
+* **`off` is not `remove`.** Off is the same soft switch as
+  `/tools off`, pointed at every qualified name of one server;
+  reversible, mid-turn-safe. Remove tears down the transport (SIGTERM →
+  SIGKILL escalation) and unregisters the tools — and always forgets
+  the saved entry, stated right in the confirmation line
+  ("saved entry forgotten").
+* **`add` asks before remembering.** After a successful connect the
+  REPL prompts `remember this server for future launches? [y/N]` — the
+  exact question the web form's checkbox answers. Yes writes
+  `.akshara/mcp.json`; future launches reconnect it automatically.
+* Connection failures print as errors (`could not connect 'x': …`),
+  never as tracebacks — a bad command name is operator input to fix,
+  not a bug to report.

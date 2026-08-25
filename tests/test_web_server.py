@@ -582,3 +582,186 @@ def test_state_carries_pressure_numbers():
     agent.last_context_tokens = 0  # no response yet: estimate + flag
     state = TestClient(make_app(session)).get("/api/state").json()
     assert state["context_estimated"] is True
+
+
+# ---- mcp servers: the panel's servers section ---------------------------------
+
+
+class _FakeMCPSession:
+    """Manager-grade stand-in for a live session (records close())."""
+
+    def __init__(self, config):
+        self.config = config
+        self.closed = False
+
+    def healthy(self):
+        return not self.closed
+
+    def close(self):
+        self.closed = True
+
+
+class _MCPTool(Tool):
+    name = ""
+    description = "fake mcp tool"
+    parameters = {"type": "object", "properties": {}}
+    read_only = True
+
+    def __init__(self, session, raw_name, server):
+        self.name = f"mcp__{server}__{raw_name}"
+
+    def summary(self, args, ctx):
+        return self.name
+
+    def run(self, args, ctx):
+        return "ran"
+
+
+def fake_mcp_connector(fail_names=()):
+    def connector(config, timeout=30.0):
+        if config.name in fail_names:
+            from akshara.mcp import MCPError
+            raise MCPError(f"cannot spawn mcp server {config.name!r}")
+        s = _FakeMCPSession(config)
+        return s, [_MCPTool(s, "echo", config.name),
+                   _MCPTool(s, "ping", config.name)]
+    return connector
+
+
+def make_mcp_session(script=None, *, fail_names=()):
+    """Like make_session, plus an MCPManager over the same registry with
+    the transport faked out (the transports have their own real-subprocess
+    tests in test_mcp.py)."""
+    from akshara.mcp import MCPManager
+
+    session, agent = make_session(script or [])
+    manager = MCPManager(agent.registry, connector=fake_mcp_connector(fail_names))
+    session.attach(agent, None, mcp=manager)
+    return session, agent, manager
+
+
+def test_no_manager_answers_400_cleanly():
+    client = TestClient(make_app(make_session([])[0]))
+    assert client.get("/api/mcp").status_code == 400
+
+
+def test_listing_and_add_then_remove_round_trip():
+    session, agent, manager = make_mcp_session()
+    client = TestClient(make_app(session))
+
+    assert client.get("/api/mcp").json() == {"servers": []}
+
+    r = client.post("/api/mcp/add", json={"name": "tiny",
+                                          "command": "python",
+                                          "args": ["srv.py"]})
+    assert r.status_code == 200
+    (result,) = r.json()["results"]
+    assert result == {"name": "tiny", "ok": True, "tools": 2}
+    assert "mcp__tiny__echo" in agent.registry
+
+    listing = client.get("/api/mcp").json()["servers"]
+    assert listing[0]["name"] == "tiny"
+    assert listing[0]["transport"] == "stdio"
+    assert listing[0]["healthy"] is True
+    assert listing[0]["tools"] == 2
+    assert listing[0]["disabled"] == 0
+
+    # remove pulls exactly that server's tools out of the registry...
+    r = client.post("/api/mcp/remove", json={"name": "tiny"})
+    assert r.status_code == 200 and r.json()["removed"] == 2
+    assert "mcp__tiny__echo" not in agent.registry
+    tool_names = [t["name"] for t in client.get("/api/tools").json()]
+    assert not any(n.startswith("mcp__tiny") for n in tool_names)
+    assert client.post("/api/mcp/remove", json={"name": "tiny"}).status_code == 404
+
+
+def test_toggle_soft_switches_whole_server_even_mid_turn():
+    from akshara.mcp import MCPServerConfig
+
+    session, agent, manager = make_mcp_session()
+    manager.connect(MCPServerConfig(name="tiny", command="py"))
+    client = TestClient(make_app(session))
+
+    r = client.post("/api/mcp/toggle", json={"name": "tiny", "enabled": False})
+    assert r.status_code == 200
+    assert agent.registry.is_disabled("mcp__tiny__echo")
+    assert agent.registry.is_disabled("mcp__tiny__ping")
+    assert client.get("/api/mcp").json()["servers"][0]["disabled"] == 2
+
+    client.post("/api/mcp/toggle", json={"name": "tiny", "enabled": True})
+    assert agent.registry.disabled_names() == []
+
+    # mid-turn is the POINT here, same as /api/tools: no require_idle
+    session.turn_active = True
+    assert client.post("/api/mcp/toggle",
+                       json={"name": "tiny", "enabled": False}).status_code == 200
+
+    assert client.post("/api/mcp/toggle",
+                       json={"name": "ghost", "enabled": True}).status_code == 404
+    assert client.post("/api/mcp/toggle",
+                       json={"name": "tiny"}).status_code == 400
+
+
+def test_add_reports_connection_failure_as_data_not_a_500():
+    session, agent, manager = make_mcp_session(fail_names=("dead",))
+    client = TestClient(make_app(session))
+    r = client.post("/api/mcp/add", json={"name": "dead", "command": "nope"})
+    assert r.status_code == 200
+    (result,) = r.json()["results"]
+    assert result["ok"] is False
+    assert "dead" in result["error"]
+    assert agent.registry.names().count("mcp__dead__echo") == 0
+
+
+def test_add_json_mode_handles_multiple_servers_with_mixed_results():
+    session, agent, manager = make_mcp_session(fail_names=("bad",))
+    client = TestClient(make_app(session))
+    config = ('{"servers": {"good": {"command": "py"}, '
+              '"bad": {"url": "http://x/mcp"}}}')
+    results = client.post("/api/mcp/add",
+                          json={"config": config}).json()["results"]
+    by_name = {r["name"]: r["ok"] for r in results}
+    assert by_name == {"good": True, "bad": False}
+    assert "mcp__good__ping" in agent.registry
+
+    bad = client.post("/api/mcp/add", json={"config": "{not json"})
+    assert bad.status_code == 400
+
+
+def test_add_validates_the_field_shape():
+    session, _, _ = make_mcp_session()
+    client = TestClient(make_app(session))
+    assert client.post("/api/mcp/add", json={"command": "py"}).status_code == 400
+    assert client.post("/api/mcp/add",
+                       json={"name": "x", "command": "a", "url": "http://y"}
+                       ).status_code == 400
+    assert client.post("/api/mcp/add",
+                       json={"name": "x", "command": "py", "args": [1]}
+                       ).status_code == 400
+    assert client.post("/api/mcp/add",
+                       json={"name": "x", "command": "py", "env": {"K": 1}}
+                       ).status_code == 400
+
+
+def test_add_and_remove_refuse_to_race_a_running_turn():
+    session, _, _ = make_mcp_session()
+    session.turn_active = True
+    client = TestClient(make_app(session))
+    assert client.post("/api/mcp/add",
+                       json={"name": "x", "command": "py"}).status_code == 409
+    assert client.post("/api/mcp/remove", json={"name": "x"}).status_code == 409
+
+
+def test_remember_flag_persists_the_entry(tmp_path):
+    from akshara.mcp import load_remembered
+
+    session, _, manager = make_mcp_session()
+    manager.memory_path = tmp_path / ".akshara" / "mcp.json"
+    client = TestClient(make_app(session))
+    client.post("/api/mcp/add", json={"name": "kept", "command": "py",
+                                      "remember": True})
+    client.post("/api/mcp/add", json={"name": "fleeting", "command": "py"})
+    saved = {c.name for c in load_remembered(manager.memory_path)}
+    assert saved == {"kept"}
+    client.post("/api/mcp/remove", json={"name": "kept"})
+    assert load_remembered(manager.memory_path) == []

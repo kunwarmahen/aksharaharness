@@ -18,7 +18,7 @@
       <span class="chip-label" id="model-name">—</span><span class="caret">▾</span></button>
     <button class="chip" id="chip-mode" title="permission mode — click to flip ask ⇄ yolo (tools run without asking in yolo)">
       <span class="chip-label" id="mode-label">—</span></button>
-    <button class="chip" id="chip-tools" title="view every tool — switch any off/on, even mid-run">
+    <button class="chip" id="chip-tools" title="servers & tools — add mcp servers, switch anything off/on, even mid-run">
       ⚙ <span id="tools-count">—</span></button>
     <span class="chip chip-static" id="chip-cost" title="session cost — unknown slugs show no figure, never a guess"></span>
     <span class="chip chip-static hidden" id="chip-ctxbar">
@@ -60,10 +60,46 @@
 <div id="tools-backdrop" class="hidden">
   <div id="tools-panel" role="dialog" aria-modal="true">
     <div class="tools-head">
-      <h3>tools</h3>
+      <h3>servers &amp; tools</h3>
       <span class="tools-note">off = never sent to the model, its calls fail as data — applies immediately, even mid-run</span>
       <button class="m-btn" id="tools-close">close</button>
     </div>
+    <div id="mcp-section">
+      <div class="mcp-head">
+        <h4>mcp servers</h4>
+        <span class="tools-note">connect new ones or cut them off — their tools come and go with them</span>
+        <button class="m-btn" id="mcp-add-btn" title="connect a new mcp server">＋ add</button>
+      </div>
+      <div id="mcp-rows"></div>
+      <div id="mcp-add-form" class="hidden">
+        <div class="mcp-tabs">
+          <button type="button" class="m-tab active" data-mode="fields">fields</button>
+          <button type="button" class="m-tab" data-mode="json">paste json</button>
+        </div>
+        <div id="mcp-fields">
+          <input id="mcp-name" placeholder="name — tools appear as mcp__NAME__…" spellcheck="false">
+          <div class="mcp-transport">
+            <label><input type="radio" name="mcp-transport" value="stdio" checked> runs a command</label>
+            <label><input type="radio" name="mcp-transport" value="http"> talks to a url</label>
+          </div>
+          <input id="mcp-command" placeholder="command + arguments (e.g. python ~/server.py --port 1)" spellcheck="false">
+          <input id="mcp-url" placeholder="http://127.0.0.1:8000/mcp" spellcheck="false" class="hidden">
+          <textarea id="mcp-env" rows="2" placeholder="env vars for the server, one KEY=value per line (optional)"></textarea>
+        </div>
+        <div id="mcp-json" class="hidden">
+          <textarea id="mcp-json-text" rows="5" spellcheck="false"
+            placeholder='{"servers": {"tiny": {"command": "python", "args": ["tiny_mcp_server.py"]}}}'></textarea>
+        </div>
+        <label class="mcp-remember"><input type="checkbox" id="mcp-remember" checked>
+          remember — reconnects on future launches</label>
+        <div id="mcp-error" class="hidden"></div>
+        <div class="mcp-actions">
+          <button class="m-btn primary" id="mcp-submit">connect</button>
+          <button class="m-btn" id="mcp-cancel-add">cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="tools-subhead">tools</div>
     <div id="tools-rows"></div>
   </div>
 </div>

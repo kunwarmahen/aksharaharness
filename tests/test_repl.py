@@ -419,3 +419,163 @@ class TestToolsCommand:
         repl, console = self._repl()
         repl._command("/tools off")
         assert "usage:" in console.file.getvalue()
+
+
+class TestMcpCommand:
+    """/mcp: the terminal twin of the panel's servers section -- list,
+    soft-toggle, remove, and add MID-SESSION over the same MCPManager."""
+
+    @staticmethod
+    def _fake_connector(closed_log=None):
+        from akshara.mcp import MCPServerConfig
+        from akshara.tools.base import Tool
+
+        class FakeSess:
+            def __init__(self, config):
+                self.config = config
+                self.closed = False
+            def healthy(self):
+                return not self.closed
+            def close(self):
+                self.closed = True
+                if closed_log is not None:
+                    closed_log.append(self.config.name)
+
+        class FakeTool(Tool):
+            name = ""
+            description = "fake mcp tool"
+            parameters = {"type": "object", "properties": {}}
+            read_only = True
+            def __init__(self, session, raw_name, server):
+                self.name = f"mcp__{server}__{raw_name}"
+            def summary(self, args, ctx):
+                return self.name
+            def run(self, args, ctx):
+                return "ran"
+
+        def connector(config, timeout=30.0):
+            s = FakeSess(config)
+            return s, [FakeTool(s, "echo", config.name),
+                       FakeTool(s, "ping", config.name)]
+
+        return connector
+
+    @staticmethod
+    def _mcpcfg(name):
+        from akshara.mcp import MCPServerConfig
+        return MCPServerConfig(name=name, command="python",
+                               args=["srv.py"])
+
+    def _repl(self, tmp_path=None, connector=None):
+        from akshara.mcp import MCPManager
+        from akshara.tools.base import ToolRegistry
+        from akshara.tools.fs import ReadFile
+
+        registry = ToolRegistry()
+        registry.register(ReadFile())
+        manager = MCPManager(
+            registry,
+            memory_path=(tmp_path / ".akshara" / "mcp.json")
+            if tmp_path else None,
+            connector=connector or self._fake_connector())
+        agent = Agent(ScriptedProvider([]), model="m", tools=registry,
+                      permissions=SwitchableGate(allow_read_only))
+        console = Console(file=io.StringIO(), width=120)
+        repl = Repl(agent, console, input_fn=lambda _prompt: "", mcp=manager)
+        return repl, console, manager
+
+    def test_no_manager_reports_instead_of_crashing(self):
+        agent = Agent(ScriptedProvider([]), model="m",
+                      permissions=allow_read_only)
+        console = Console(file=io.StringIO(), width=100)
+        repl = Repl(agent, console, input_fn=lambda _p: "")
+        assert repl._command("/mcp") is False
+        assert "no mcp manager" in console.file.getvalue()
+
+    def test_empty_listing_points_at_add(self):
+        repl, console, _ = self._repl()
+        repl._command("/mcp")
+        assert "no mcp servers connected" in console.file.getvalue()
+
+    def test_listing_shows_transport_target_and_counts(self):
+        repl, console, manager = self._repl()
+        manager.connect(self._mcpcfg("tiny"))
+        console.file.truncate(0)
+        console.file.seek(0)
+        repl._command("/mcp")
+        out = console.file.getvalue()
+        assert "tiny" in out and "(stdio)" in out
+        assert "python srv.py" in out
+        assert "2 tool(s)" in out
+
+    def test_off_then_on_soft_toggles_whole_server(self):
+        repl, console, manager = self._repl()
+        manager.connect(self._mcpcfg("tiny"))
+        name = "mcp__tiny__echo"
+        assert repl._command("/mcp off tiny") is False
+        assert repl.agent.registry.is_disabled(name)
+        assert "disabled 2 tool(s)" in console.file.getvalue()
+        assert repl._command("/mcp on tiny") is False
+        assert not repl.agent.registry.is_disabled(name)
+
+    def test_toggle_usage_and_unknown_server_are_loud(self):
+        repl, console, manager = self._repl()
+        manager.connect(self._mcpcfg("tiny"))
+        repl._command("/mcp off")
+        assert "usage:" in console.file.getvalue()
+        repl._command("/mcp off ghost")
+        assert "no mcp server named 'ghost'" in console.file.getvalue()
+
+    def test_remove_unregisters_tools_and_closes_transport(self):
+        closed = []
+        repl, console, manager = self._repl(
+            connector=self._fake_connector(closed))
+        manager.connect(self._mcpcfg("tiny"))
+        assert repl._command("/mcp remove tiny") is False
+        assert "mcp__tiny__echo" not in repl.agent.registry
+        assert closed == ["tiny"]
+        out = console.file.getvalue()
+        assert "disconnected 'tiny'" in out
+        assert "saved entry forgotten" in out
+
+    def test_add_url_connects_over_http_shape(self):
+        import unittest.mock as mock
+        from rich.prompt import Prompt
+
+        repl, console, manager = self._repl(tmp_path=None)
+        with mock.patch.object(Prompt, "ask",
+                               staticmethod(lambda *a, **k: "N")):
+            assert repl._command("/mcp add remote http://127.0.0.1:9/mcp") \
+                is False
+        info = manager.servers()[0]
+        assert info["transport"] == "http"
+        assert "connected remote: 2 tool(s)" in console.file.getvalue()
+
+    def test_add_command_with_args_and_remember_saves_entry(self, tmp_path=None):
+        import tempfile
+        import unittest.mock as mock
+        from pathlib import Path
+        from rich.prompt import Prompt
+
+        tmp = Path(tempfile.mkdtemp())
+        repl, console, manager = self._repl(tmp_path=tmp)
+        with mock.patch.object(Prompt, "ask",
+                               staticmethod(lambda *a, **k: "y")):
+            assert repl._command(
+                "/mcp add tiny python srv.py --port 9") is False
+        cfgs = manager.servers()
+        assert cfgs[0]["target"] == "python srv.py --port 9"
+        assert cfgs[0]["remembered"] is True
+        saved = tmp / ".akshara" / "mcp.json"
+        assert saved.exists() and "tiny" in saved.read_text()
+        assert "saved to" in console.file.getvalue()
+
+    def test_add_failure_is_reported_not_raised(self):
+        from akshara.mcp import MCPError
+
+        def failing(config, timeout=30.0):
+            raise MCPError("cannot spawn mcp server 'dead'")
+
+        repl, console, _ = self._repl(connector=failing)
+        repl._command("/mcp add dead python x.py")
+        assert "could not connect 'dead'" in console.file.getvalue()

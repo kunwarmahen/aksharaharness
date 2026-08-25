@@ -124,6 +124,7 @@ class WebSession:
     def __init__(self) -> None:
         self.agent: Agent | None = None
         self.store: SessionStore | None = None
+        self.mcp: Any | None = None  # MCPManager; optional -- tests may omit
         self._clients: list[_Client] = []
         self._clients_lock = threading.Lock()
         self._pending: _Pending | None = None
@@ -132,9 +133,12 @@ class WebSession:
 
     # ---- wiring -------------------------------------------------------------
 
-    def attach(self, agent: Agent, store: SessionStore | None) -> None:
+    def attach(self, agent: Agent, store: SessionStore | None,
+               mcp: Any | None = None) -> None:
         self.agent = agent
         self.store = store
+        if mcp is not None:
+            self.mcp = mcp
         # Raw StreamEvents are PUSHED here while each response streams (they
         # cannot be yielded -- collect() owns that pull). Same wiring as the
         # REPL's renderer: without this, text/thinking deltas vanish.
@@ -632,6 +636,119 @@ def make_app(session: WebSession, static_dir: Path | None = None,
         session.broadcast({"type": "state", **session.state()})
         return session.state()
 
+    # ---- MCP server management ----------------------------------------------
+
+    def require_mcp() -> Any:
+        require_ready()
+        if session.mcp is None:
+            raise HTTPException(400, "this session has no mcp manager")
+        return session.mcp
+
+    @app.get("/api/mcp")
+    def mcp_list() -> dict[str, list[dict[str, Any]]]:
+        """The servers section of the tools panel: transport, liveness,
+        tool counts (incl. how many are soft-disabled), remembered flag."""
+        return {"servers": require_mcp().servers()}
+
+    @app.post("/api/mcp/toggle")
+    async def mcp_toggle(req: Request) -> dict[str, Any]:
+        """Soft-switch one server's whole toolset. Deliberately NO
+        require_idle(), same argument as /api/tools: the disabled set is
+        consulted per call, so cutting a server off lands on its very
+        next call of a running turn. The process stays warm."""
+        mcp = require_mcp()
+        body = await req.json()
+        name, enabled = body.get("name"), body.get("enabled")
+        if not isinstance(name, str) or not isinstance(enabled, bool):
+            raise HTTPException(400, "name (str) and enabled (bool) required")
+        try:
+            mcp.set_enabled(name, enabled)
+        except Exception as exc:  # unknown server (MCPError) -> clean 404
+            raise HTTPException(404, str(exc)) from exc
+        session.broadcast({"type": "state", **session.state()})
+        return session.state()
+
+    @app.post("/api/mcp/add")
+    async def mcp_add(req: Request) -> dict[str, Any]:
+        """Connect a new server mid-session. Two shapes:
+
+        * fields -- {name, command|url, args?, env?, remember?}: what the
+          panel's simple form sends;
+        * {config: "<json>"} -- the panel's paste-JSON mode, same
+          ``{"servers": {...}}`` syntax as --mcp-config files; may add
+          several at once.
+
+        DOES take require_idle(): connecting spawns processes and
+        mutates the registry, which must not interleave with a turn's
+        batch iteration. Per-server results come back so one bad entry
+        doesn't hide the others."""
+        from akshara.mcp import MCPServerConfig, parse_mcp_text
+
+        require_idle()
+        mcp = require_mcp()
+        body = await req.json()
+        results: list[dict[str, Any]] = []
+
+        def attempt(cfg) -> None:
+            try:
+                names = mcp.connect(cfg, remember=bool(body.get("remember")))
+                results.append({"name": cfg.name, "ok": True,
+                                "tools": len(names)})
+            except Exception as exc:
+                results.append({"name": cfg.name, "ok": False,
+                                "error": str(exc)})
+
+        if isinstance(body.get("config"), str):
+            try:
+                configs = parse_mcp_text(body["config"])
+            except Exception as exc:  # MCPError from the shared parser
+                raise HTTPException(400, str(exc)) from exc
+            for cfg in configs:
+                attempt(cfg)
+        else:
+            name = body.get("name")
+            command, url = body.get("command"), body.get("url")
+            if not isinstance(name, str) or not name.strip():
+                raise HTTPException(400, "name is required")
+            if (command is None) == (url is None):
+                raise HTTPException(400, "exactly one of 'command' (stdio)"
+                                         " or 'url' (http) is required")
+            args = body.get("args") or []
+            env = body.get("env") or None
+            if not isinstance(args, list) or \
+                    not all(isinstance(a, str) for a in args):
+                raise HTTPException(400, "args must be a list of strings")
+            if env is not None and (not isinstance(env, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str)
+                    for k, v in env.items())):
+                raise HTTPException(400, "env must map strings to strings")
+            attempt(MCPServerConfig(
+                name=name.strip(),
+                command=command if command is None else str(command),
+                args=args, url=url if url is None else str(url),
+                env=env))
+        session.broadcast({"type": "state", **session.state()})
+        return {"results": results, **session.state()}
+
+    @app.post("/api/mcp/remove")
+    async def mcp_remove(req: Request) -> dict[str, Any]:
+        """Disconnect one server and pull its tools (a saved entry is
+        forgotten too). require_idle() like add: closing transports and
+        unregistering must not race a running turn."""
+        from akshara.mcp import MCPError
+
+        require_idle()
+        mcp = require_mcp()
+        name = (await req.json()).get("name")
+        if not isinstance(name, str):
+            raise HTTPException(400, "name (str) required")
+        try:
+            removed = mcp.disconnect(name)
+        except MCPError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        session.broadcast({"type": "state", **session.state()})
+        return {"removed": removed, **session.state()}
+
     @app.post("/api/save")
     async def save(req: Request) -> dict[str, Any]:
         require_idle()
@@ -676,15 +793,17 @@ def make_app(session: WebSession, static_dir: Path | None = None,
 
 
 def launch(session: WebSession, agent: Agent, store: SessionStore | None,
-           *, host: str = "127.0.0.1", port: int = 8321) -> int:
+           *, host: str = "127.0.0.1", port: int = 8321,
+           mcp: Any | None = None) -> int:
     """Blocking entrypoint for `akshara --web`: attach, banner, serve."""
     import uvicorn
 
-    session.attach(agent, store)
+    session.attach(agent, store, mcp=mcp)
     app = make_app(session)
+    servers = f" · mcp servers={len(mcp.sessions)}" if mcp else ""
     print(f"\n  akshara web UI -> http://{host}:{port}\n"
           f"  provider={agent.provider.name} · model={agent.model} · "
-          f"tools={len(agent.registry)} · cwd={agent.ctx.cwd}\n"
+          f"tools={len(agent.registry)}{servers} · cwd={agent.ctx.cwd}\n"
           "  ctrl-c stops the server\n")
     uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0

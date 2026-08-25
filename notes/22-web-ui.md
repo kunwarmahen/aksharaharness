@@ -97,12 +97,33 @@ deliberate exceptions skip that guard:
   so pulling a tool mid-turn just makes its *next* call fail as data
   ("disabled by the operator"), which the model reads and routes
   around.
+* `/api/mcp/toggle` — the same soft switch pointed at a whole MCP
+  server's toolset (`MCPManager.set_enabled`, process stays warm);
+  skips the idle guard for exactly the same live-consulted reason.
 
-Both endpoints broadcast a fresh `state` so other open tabs follow
+The rest of the MCP family DOES take the guard, deliberately:
+`POST /api/mcp/add` spawns child processes and registers tools (and
+`/api/mcp/remove` closes them) — mutating the registry mid-batch would
+race iteration, so those two are 409 while a turn runs, like every
+other mutator. `add` accepts either form fields (`name` +
+`command`+`args`+`env`, or `url` for Streamable HTTP) or a pasted JSON
+blob in the same shape as `--mcp-config`
+(`{"servers": {...}}`) parsed server-side; each entry reports its own
+result inside `results[]` — one bad server is an `ok:false` row, not a
+500 hiding the three that worked. A checked-by-default "remember"
+saves the entry to `.akshara/mcp.json` for auto-reconnect on future
+launches; remove always forgets it ([09-mcp.md](09-mcp.md)).
+
+All of these broadcast a fresh `state` so other open tabs follow
 along. The top-bar mode chip shows the permission mode — red while
-yolo — and clicking it flips; the ⚙ tools chip opens a panel of the
-same switches with a count of how many are off. Same switches back the
-REPL's `/yolo` and `/tools off|on` ([06-cli.md](06-cli.md)).
+yolo — and clicking it flips; the ⚙ servers & tools chip opens a
+panel holding both halves: the MCP rows first (health dot, transport
+badge, `saved` tag, per-server switch, a two-step remove button whose
+first click arms "sure?" instead of trusting a native dialog), then
+the tool switches with a count of how many are off. Same objects back
+the REPL's `/yolo`, `/tools off|on`, and `/mcp` commands
+([06-cli.md](06-cli.md)). Sessions without an MCP manager (the
+library path) simply hide the servers half.
 
 The `state` snapshot also carries the context-pressure numbers
 (`context_tokens`, `context_window`, an `estimated` flag for when only
@@ -183,7 +204,7 @@ running and no modal owns the keyboard.
   turn; a batch-mate running beside a failed ask keeps its real result;
   `read_only=True` never gates; TerminalChannel choice/free-text/
   empty-reprompt/EOF behaviors.
-* `test_web_server.py` (25): connect handshake (state, pending question,
+* `test_web_server.py` (33): connect handshake (state, pending question,
   replay); streaming deltas; deny becomes error data; the full
   edit→re-summary→approve round-trip adopting edited args into history;
   ask answered over the wire; cancel during a pending ask, then the
@@ -194,7 +215,12 @@ running and no modal owns the keyboard.
   validation errors, a disabled tool's call failing as data MID-turn
   (an `ask_user` parks the worker so the flip lands deterministically),
   state broadcasts reaching a second open tab, `interrupt_check` wired
-  to the cancel flag, and pressure numbers in `state`.
+  to the cancel flag, pressure numbers in `state`, and the MCP family:
+  list/add/remove round trip over a fake connector, whole-server toggle
+  allowed mid-turn while add/remove 409, connection failure arriving as
+  an `ok:false` row rather than a 500, mixed good+bad JSON-mode results,
+  field-shape validations, and the remember flag persisting only what
+  was kept.
 * `test_md_renderer.py` (10): the page's markdown renderer executed by
   node — escaping above all (model HTML stays text), emphasis/code/
   strike, heading mapping, fenced code, tables, nested and ordered
