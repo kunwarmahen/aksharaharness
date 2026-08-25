@@ -27,11 +27,26 @@ matters because tool names ARE the vocabulary.
 
 ## The score floor is the design
 
-`select(query, k=7)` returns pins + positive-scoring tools only. A
-query nothing matches returns JUST the pins — never filler ranked last,
+`select(query, k)` returns pins + positive-scoring tools only. A query
+nothing matches returns JUST the pins — never filler ranked last,
 because a filler ranked last still teaches the model a wrong tool
-exists. Pins come from `catalog.must_include` (default:
-`list_available_tools`); a caller can pass its own set or none.
+exists. Pins come from `catalog.must_include` (default: `CORE_PINS` +
+`list_available_tools`, resolved against what is actually registered);
+a caller can pass its own set via `enable_selection(registry,
+pins=(...))` or none.
+
+## Why the core is PINNED, not retrieved
+
+Retrieval ranks descriptions against conversation vocabulary — but the
+autonomy loop's floor doesn't describe the TASK, it enables every
+task. Ask "fix this bug in parser.py" and `write_file`'s description
+shares not one word with the query; BM25 correctly drops it, exactly
+when the turn needs it next. So six tools beat the query and load
+every turn regardless of score (`selector.CORE_PINS`): read_file,
+write_file, edit_file, bash, glob, grep — plus the discovery hatch.
+That arithmetic sets the auto-enable width: `DEFAULT_TOOLS_PER_TURN =
+12` leaves ~5 slots for the retrieved long tail (MCP servers, browser,
+background jobs), which is what selection was for in the first place.
 
 ## Three pieces
 
@@ -41,38 +56,48 @@ exists. Pins come from `catalog.must_include` (default:
 | `query_from_transcript(history)` | first user message = session anchor; recent assistant text + **tool-call names** track the current sub-task. Names matter most at pivots: having called `mcp__db__run_query` puts db vocabulary into the query BEFORE any prose about databases exists |
 | `ListAvailableTools` | the pinned discovery hatch: lists the FULL catalog on demand, optional substring filter |
 
-The discovery tool exists because try-fail-retry alone has two holes
-it cannot close: vague openers where everything scores zero, and
-mid-task pivots whose new vocabulary hasn't reached the transcript yet.
+The discovery tool closes the two holes retrieval alone cannot:
+vague openers where everything scores zero, and mid-task pivots whose
+new vocabulary hasn't reached the transcript yet — the model can ASK
+what exists instead of guessing. (Execution-side, guessing is now
+harmless — soft admission runs any real name — but harmless guesses
+still waste a call; the hatch lets the model look before it leaps.)
 Its description teaches the contract explicitly: *a tool discovered here
 becomes usable from YOUR NEXT TURN* — when its name sits in history and
 BM25 surfaces it naturally.
 
-## The seam must cut twice
+## The seam cuts once: selection caps what gets SENT
 
-Restricting only what gets SENT would leave deselected tools
-executable — selection as theater. So when a catalog is active:
+The original design cut twice — unselected tools were also
+unexecutable, and a hidden-but-real call got an error teaching the
+discovery path (*"call list_available_tools"*). Live use broke that.
+The model names tools it legitimately knows: from an earlier listing,
+from resumed history, or because `write_file` is simply what every
+model has in its weights. Punishing exact knowledge with a failed
+round-trip taught nothing, burned an iteration, and weaker local
+models thrashed on the retry dance — one session lost several turns
+to *"write_file exists but is not loaded this turn."*
 
-1. `_specs_for_request()` sends only this turn's selection;
-2. `_get_visible_tool(name)` resolves calls through the SAME selection.
+So execution now SOFT-ADMITS (`_get_visible_tool`): a call naming a
+real but unselected tool joins `_turn_tools` on the spot and runs THIS
+turn. Permission gating is unchanged — admission only bypasses the
+retrieval cap, never the seatbelt. And it converges by itself: the
+executed name lands in history, which feeds the next selection query,
+so BM25 keeps it ranked from here on without any special casing.
 
-Hidden-but-real names get an error result that is data, not a crash —
-and the message teaches the recovery path: *"tool 'x' exists but is not
-loaded this turn … call list_available_tools."* A genuinely
-nonexistent name keeps the plain old *"no such tool"*. Two distinct
-messages, because they have distinct fixes. The failed call lands in
-history like any other, which feeds its vocabulary into the next
-selection query — that feedback loop is why try-fail-retry CONVERGES
-instead of thrashing.
+That leaves exactly one failure mode, and it's the honest one:
+a genuinely hallucinated name still errors as data ("no such tool").
+Selection stays what it should be — a context-economy decision about
+what to SEND — rather than a second permission system.
 
 The loop has one more input most designs miss: **recent tool RESULTS
 join the query too** (truncated). A discovery answer is a user-role
 ToolResult full of tool names; if results didn't feed back, the
-promised "discovered here → loaded for your next step" would silently
-fail — the live session proved it before the fix (model listed the
-tools, then correctly reported it still couldn't call them). Results
-are capped at ~400 chars each and only from the recent window, so a
-noisy bash output can't drown the query.
+promised "listed here → surfaced next step" would silently fail — the
+live session proved it before the fix (model listed the tools, then
+correctly reported it still couldn't call them). Results are capped at
+~400 chars each and only from the recent window, so a noisy bash
+output can't drown the query.
 
 Without a catalog everything is byte-identical to before (pinned by
 `test_no_catalog_keeps_full_registry`).
@@ -80,10 +105,31 @@ Without a catalog everything is byte-identical to before (pinned by
 ## Wiring
 
 ```
-uv run akshara --tool-select 7     # force width K
-                                   # auto-enables above 20 tools otherwise
+uv run akshara --tool-select 12    # force width K
+                                   # auto-enables at 12 above 20 tools otherwise
 uv run akshara --tool-select 0     # opt out of the auto-enable
+AKSHARA_TOOLS_PER_TURN=12          # .env spelling of the same switch
 ```
+
+## Trimming the toolset entirely
+
+Selection decides what fits in a request; sometimes you want a tool to
+not exist. `AKSHARA_DISABLED_TOOLS` takes comma-separated glob patterns
+matched against tool names and UNREGISTERS matches after MCP servers
+connect but before any catalog is built — so a disabled tool is never
+sent, never executed, never suggested by `list_available_tools`, and
+never pinned:
+
+```bash
+# hide one family ...
+AKSHARA_DISABLED_TOOLS=browser_open,browser_click,browser_fill,browser_close
+# ... or one tool, or a whole MCP server
+AKSHARA_DISABLED_TOOLS=web_fetch,mcp__slack__*
+```
+
+A pattern matching nothing prints a warning — typos should be loud.
+The registry's `unregister(name)` is the primitive; the env var is just
+the operator-facing spelling.
 
 `enable_selection(registry)` is idempotent: a second call re-points the
 live discovery instance at the rebuilt index instead of colliding.
@@ -109,8 +155,10 @@ on its own.
 
 Which is also why discovery must be FRICTIONLESS: `confirm_gate` never
 prompts for read-only tools, because a permission wall in front of the
-hatch turns every selection miss into a dead end.
+hatch turns every discovery question into a dead end.
 
-Beyond description quality: per-turn selection adds one failure mode
-the full-registry world doesn't have (the hidden-but-real error above);
-we judged teaching that once cheaper than paying the cliff forever.
+The honest cost ledger: per-turn selection still trades a little
+context certainty for a lot of context economy. A tool outside the
+pins can be missed in the SENT set on its first use — soft admission
+makes that miss cheap (the call runs anyway) rather than free, and
+description quality decides how often it happens at all.

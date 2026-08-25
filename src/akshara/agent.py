@@ -122,8 +122,10 @@ class Agent:
         self.registry = tools if tools is not None else ToolRegistry()
         # Dynamic tool loading (book ch12): when a ToolCatalog is set, each
         # ITERATION sends only the catalog's top-K picks for the current
-        # conversation (see _begin_iteration); calls naming unselected
-        # tools become error-data pointing at list_available_tools.
+        # conversation (see _begin_iteration). Selection caps what gets
+        # SENT, not what can EXECUTE: calling an existing tool by exact
+        # name soft-admits it (see _get_visible_tool), so the only
+        # model-visible failure left is a genuinely unknown name.
         self.tool_catalog = tool_catalog
         self.tools_per_turn = tools_per_turn
         self.ctx = ToolContext(cwd=(cwd or Path.cwd()).resolve())
@@ -272,19 +274,28 @@ class Agent:
         return [t.spec() for t in self._turn_tools]
 
     def _get_visible_tool(self, name: str):
-        """registry.get under selection. The distinction matters to the
-        MODEL: 'no such tool' means it hallucinated; 'not loaded this
-        turn' means it should call list_available_tools and retry."""
+        """registry.get under selection -- with SOFT ADMISSION.
+
+        The K-cap governs what gets SENT (context economy), not what can
+        execute: a model that names an existing tool has already
+        discovered it (a prior listing, resumed history, or the name is
+        simply right), and punishing exact knowledge with a failed turn
+        taught nothing. So an unselected-but-real call is ADMITTED into
+        _turn_tools on the spot and runs this same turn -- permission
+        gating unchanged, and its name in history means BM25 keeps it
+        selected from here on (convergence without the punishment lap).
+        Only a genuinely unknown name still errors, as data.
+        """
         if self._turn_tools is not None:
             for tool in self._turn_tools:
                 if tool.name == name:
                     return tool
-            if self.tool_catalog.get(name) is not None:
-                raise KeyError(
-                    f"tool {name!r} exists but is not loaded this turn "
-                    f"(only {self.tools_per_turn} load per turn) -- call "
-                    f"list_available_tools to see everything; discovered "
-                    f"tools become available next turn")
+            tool = self.tool_catalog.get(name)
+            if tool is not None:
+                # List.append is atomic under the GIL; batch workers may
+                # admit concurrently, but nothing ever removes from here.
+                self._turn_tools.append(tool)
+                return tool
             raise KeyError(f"no such tool: {name!r}") from None
         return self.registry.get(name)
 

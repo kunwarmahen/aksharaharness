@@ -13,6 +13,11 @@ share vocabulary with tool descriptions; it is ~60 lines, zero
 dependencies, and swapping in embeddings later means replacing exactly
 one method.
 
+Selection is a context-economy decision about what gets SENT -- never
+a second permission system. The loop soft-admits calls that name real
+but unselected tools (see Agent._get_visible_tool); only hallucinated
+names error.
+
 Three pieces:
 
 * ``ToolCatalog``      -- the index: BM25 over name+description tokens,
@@ -22,8 +27,8 @@ Three pieces:
                          assistant text and tool-call names. Tool names
                          carry vocabulary: "mcp__slack__post_message"
                          appearing in history is itself a query term.
-* ``ListAvailableTools``    -- the pinned discovery tool that closes the
-                         two holes try-fail-retry cannot: vague openers
+* ``ListAvailableTools``    -- the pinned discovery hatch for the two
+                         holes retrieval cannot close: vague openers
                          where everything scores zero, and mid-task pivots
                          whose new vocabulary hasn't reached the transcript.
 
@@ -42,6 +47,23 @@ from akshara.tools.base import Tool, ToolContext
 
 #: Book's rule of thumb: don't bother below this catalog size.
 AUTO_SELECTION_THRESHOLD = 20
+
+#: The autonomy loop's floor -- every task reads and writes files and
+#: runs commands, but their descriptions only share vocabulary with a
+#: query when the TASK is about files ("edit config.yaml"). "Fix this
+#: bug in parser.py" matches none of them, so retrieval would drop
+#: write_file exactly when the turn needs it next. Pins beat the query:
+#: they load every turn regardless of score (book ch12: "pin the few
+#: that must always be there"). The LONG TAIL -- MCP tools, browser,
+#: background jobs -- stays retrievable; that is what selection is for.
+CORE_PINS = ("read_file", "write_file", "edit_file",
+             "bash", "glob", "grep")
+
+#: Width used when selection auto-enables past AUTO_SELECTION_THRESHOLD.
+#: Arithmetic: len(CORE_PINS) pins + the discovery hatch leaves ~5 slots
+#: for retrieved long-tail tools -- k below the pin count would leave
+#: BM25 nothing to do.
+DEFAULT_TOOLS_PER_TURN = 12
 
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9_]+")
 
@@ -225,11 +247,16 @@ class ListAvailableTools(Tool):
 
 
 def enable_selection(registry, *, k: int = 7,
+                     pins: Iterable[str] = CORE_PINS,
                      ) -> tuple[ToolCatalog, ListAvailableTools]:
     """Wire selection onto an existing registry: builds a fresh catalog
     over everything registered SO FAR and ensures exactly one discovery
-    tool exists on both sides. IDEMPOTENT -- calling twice re-points the
-    live discovery instance at the rebuilt index instead of colliding.
+    tool exists on both sides. ``pins`` name the always-loaded tools
+    (default CORE_PINS plus the discovery hatch); names absent from the
+    registry -- never registered, or disabled by the operator -- are
+    skipped silently, so a pin list may be written against the FULL
+    default toolset. IDEMPOTENT -- calling twice re-points the live
+    discovery instance at the rebuilt index instead of colliding.
     Assign ``agent.tool_catalog`` and set ``agent.tools_per_turn = k``
     (explicit wiring over hidden magic)."""
     catalog = ToolCatalog([t for t in registry
@@ -242,4 +269,10 @@ def enable_selection(registry, *, k: int = 7,
         discovery = ListAvailableTools(catalog)
         catalog.add(discovery)
         registry.register(discovery)
+    # Pins resolve against the FINAL toolset (discovery included), deduped,
+    # so must_include always names what will actually pin.
+    present = {t.name for t in catalog.tools}
+    catalog.must_include = tuple(dict.fromkeys(
+        name for name in (*pins, "list_available_tools")
+        if name in present))
     return catalog, discovery

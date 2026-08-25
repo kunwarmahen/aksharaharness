@@ -301,11 +301,13 @@ class Repl:
                     )
             case "tools":
                 if self.agent.tool_catalog is not None:
+                    pinned = [n for n in self.agent.tool_catalog.must_include
+                              if n != "list_available_tools"]
                     self.console.print(
-                        f"[dim]selection active: only the best-matching "
-                        f"{self.agent.tools_per_turn} load per turn; "
-                        f"{len(self.agent.tool_catalog.tools) - 1} selectable "
-                        f"+ list_available_tools (pinned)[/dim]")
+                        f"[dim]selection active: top {self.agent.tools_per_turn} of "
+                        f"{len(self.agent.tool_catalog.tools)} each turn; "
+                        f"always loaded: {', '.join(pinned)} + "
+                        f"list_available_tools[/dim]")
                 for spec in self.agent.registry.specs():
                     self.console.print(
                         f"[bold]{spec.name}[/bold] — {spec.description}"

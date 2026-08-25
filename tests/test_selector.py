@@ -5,8 +5,6 @@ things that can EXECUTE).
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from akshara.agent import Agent
@@ -14,6 +12,8 @@ from akshara.permissions import yolo
 from akshara.tools.base import Tool, ToolRegistry
 from akshara.tools.selector import (
     AUTO_SELECTION_THRESHOLD,
+    CORE_PINS,
+    DEFAULT_TOOLS_PER_TURN,
     ListAvailableTools,
     ToolCatalog,
     enable_selection,
@@ -193,6 +193,54 @@ class TestEnableSelection:
         enable_selection(registry)
         enable_selection(registry)  # must not raise on the second wire-up
 
+    def test_core_pins_load_even_at_zero_score(self):
+        """Pins beat the query: the autonomy loop's floor is loadable on
+        every turn, whatever the conversation is about."""
+        registry = ToolRegistry()
+        for name in ("read_file", "write_file", "bash"):
+            registry.register(_mk(name, f"{name}: terse description"))
+        for i in range(30):
+            registry.register(_mk(f"svc_{i}", f"service tool {i}"))
+        catalog, _ = enable_selection(registry)
+        picked = {t.name for t in
+                  catalog.select("zzz qqq nothing matches", k=12)}
+        assert {"read_file", "write_file", "bash",
+                "list_available_tools"} <= picked
+
+    def test_pins_absent_from_registry_are_skipped(self):
+        """A pin list may be written against the FULL default toolset;
+        names that are not registered (or were disabled) just don't pin."""
+        registry = ToolRegistry()
+        for i in range(25):
+            registry.register(_mk(f"svc_{i}", f"service tool {i}"))
+        catalog, _ = enable_selection(registry)
+        assert catalog.must_include == ("list_available_tools",)
+
+    def test_custom_pins_replace_the_default_set(self):
+        registry = ToolRegistry()
+        for i in range(25):
+            registry.register(_mk(f"svc_{i}", f"service tool {i}"))
+        registry.register(_mk("special", "the one that matters"))
+        catalog, _ = enable_selection(registry, pins=("special",))
+        assert "special" in catalog.must_include
+        assert "read_file" not in catalog.must_include
+
+
+class TestRegistryUnregister:
+    """unregister exists for the operator kill-switch: AKSHARA_DISABLED_TOOLS
+    pulls tools BEFORE catalog building, so a disabled tool is never sent,
+    suggested, or pinned."""
+
+    def test_round_trip(self):
+        registry = ToolRegistry()
+        registry.register(_mk("t0", "tool zero"))
+        assert registry.unregister("t0") is True
+        assert "t0" not in registry
+
+    def test_missing_name_reports_false(self):
+        registry = ToolRegistry()
+        assert registry.unregister("ghost") is False
+
 
 # ---- loop integration ----------------------------------------------------------
 
@@ -225,9 +273,10 @@ class TestLoopIntegration:
         assert all(s.name != "mcp__db__run_query" or s.name in
                    {t.name for t in agent._turn_tools} for s in sent)
 
-    def test_unselected_tool_becomes_actionable_error_data(self):
-        """The book's try-fail-retry mechanism: calling a hidden-but-real
-        tool yields an error result that TEACHES the discovery path."""
+    def test_unselected_tool_soft_admits_and_executes(self):
+        """Selection caps what gets SENT, not what can execute: a model
+        that names an existing tool has already discovered it, so the
+        call is admitted and runs THIS turn -- no punishment lap."""
         provider = ScriptedProvider([
             ModelResponse(Message("assistant", [
                 TextBlock("querying"),
@@ -238,19 +287,58 @@ class TestLoopIntegration:
         ])
         agent = _agent_with_selection(provider, k=5)
         events = list(agent.run_streaming("totally unrelated filler talk"))
+        results = [e.result for e in events if hasattr(e, "result")]
+        assert results, "the call should have executed"
+        assert not any(r.is_error for r in results)
+        assert "mcp__db__run_query ran" in results[0].content
+        # Admission sticks: the name is now selected, no BM25 luck needed.
+        assert "mcp__db__run_query" in {t.name for t in agent._turn_tools}
+        # ...and the name landed in history, feeding future queries.
+        flat = "".join(getattr(b, "text", "") or getattr(b, "name", "")
+                       or "" for m in provider.requests[-1]["messages"]
+                       for b in m.content)
+        assert "mcp__db__run_query" in flat
+
+    def test_unknown_name_still_errors_as_data(self):
+        """Soft admission leaves exactly one failure mode: a genuinely
+        hallucinated name, whose error still teaches the discovery path."""
+        provider = ScriptedProvider([
+            ModelResponse(Message("assistant", [
+                ToolCall("c1", "no_such_tool", {}),
+            ]), "tool_use", Usage(input_tokens=10, output_tokens=5)),
+            ModelResponse(Message("assistant",
+                                  [TextBlock("ok")]), "end_turn", Usage()),
+        ])
+        agent = _agent_with_selection(provider, k=5)
+        events = list(agent.run_streaming("anything at all"))
         errors = [e.result for e in events
                   if hasattr(e, "result") and e.result.is_error]
-        assert errors, "unselected call should fail as data"
-        assert "not loaded this turn" in errors[0].content
-        assert "list_available_tools" in errors[0].content
-        # ...and the failed NAME is now in history, so the next selection
-        # query carries its vocabulary (the convergence engine).
-        rendered = json.dumps([b.__dict__ if hasattr(b, "__dict__")
-                               else str(b) for b in []])  # placeholder no-op
-        last = provider.requests[-1]["messages"]
-        flat = "".join(getattr(b, "text", "") or getattr(b, "name", "")
-                       or "" for m in last for b in m.content)
-        assert "mcp__db__run_query" in flat
+        assert errors, "hallucinated call should fail as data"
+        assert "no such tool" in errors[0].content
+
+    def test_core_pins_reach_every_request(self):
+        """THE regression this fixes: 'refactor the parser module' shares
+        zero vocabulary with write_file -- retrieval alone would drop it,
+        pins keep the autonomy loop loadable every single turn."""
+        provider = ScriptedProvider([
+            ModelResponse(Message("assistant",
+                                  [TextBlock("done")]), "end_turn", Usage()),
+        ])
+        registry = ToolRegistry()
+        for name in CORE_PINS:
+            registry.register(_mk(name, f"{name}: terse generic description"))
+        for i in range(30):
+            registry.register(_mk(f"filler_{i}", f"misc utility number {i}"))
+        catalog, _ = enable_selection(registry)
+        agent = Agent(provider, model="scripted", tools=registry,
+                      permissions=yolo, tool_catalog=catalog,
+                      tools_per_turn=DEFAULT_TOOLS_PER_TURN)
+        agent.run("refactor the parser module")
+        sent = provider.requests[0]["tools"]
+        assert set(CORE_PINS) <= {s.name for s in sent}
+        # The query matches nothing else, so the floor leaves exactly the
+        # pins -- never filler ranked last.
+        assert len(sent) == len(CORE_PINS) + 1  # + discovery
 
     def test_no_catalog_keeps_full_registry(self):
         """Without a catalog everything is byte-identical to before."""
