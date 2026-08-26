@@ -15,6 +15,7 @@ from conftest import ScriptedProvider, assistant_text
 
 from akshara.agent import Agent
 from akshara.cli.repl import Repl, confirm_gate
+from akshara.env_context import EnvContext
 from akshara.permissions import PermissionRequest, SwitchableGate, allow_read_only
 from akshara.types import ImageBlock, StartEvent, TextBlock, TextDelta
 
@@ -359,6 +360,53 @@ class TestYoloCommand:
         repl._command("/yolo on")
         assert not isinstance(gate, SwitchableGate)  # untouched static fn
         assert "fixed" in console.file.getvalue()
+
+
+class TestEnvCommand:
+    """/env shows and flips session awareness -- the terminal twin of the
+    web UI's env chip. Started at 'local'/'off' only: 'full' would hit the
+    geo seam, and the suite stays offline."""
+
+    @staticmethod
+    def make_env_repl(mode: str = "local"):
+        agent = Agent(ScriptedProvider([]), model="m",
+                      permissions=SwitchableGate(allow_read_only))
+        console = Console(file=io.StringIO(), width=100)
+        repl = Repl(agent, console, input_fn=lambda prompt: "")
+        ctx = EnvContext(mode)
+        ctx.attach(agent)  # local/off collect machine facts only
+        return repl, console, agent, ctx
+
+    def test_bare_command_shows_mode_and_fact_lines(self):
+        repl, console, _, _ = self.make_env_repl()
+        assert repl._command("/env") is False
+        out = console.file.getvalue()
+        assert "env context: local" in out
+        assert "- Working directory:" in out
+
+    def test_flip_changes_level_and_live_system(self):
+        repl, console, agent, ctx = self.make_env_repl()
+        repl._command("/env off")
+        assert ctx.mode == "off"
+        assert agent.system is None  # off == pre-awareness wire shape
+        repl._command("/env local")
+        assert "applies to the next model call" in console.file.getvalue()
+        assert "- Time:" in agent.system
+
+    def test_invalid_argument_reports_usage_and_keeps_level(self):
+        repl, console, agent, ctx = self.make_env_repl()
+        before = agent.system
+        repl._command("/env psychic")
+        assert "usage:" in console.file.getvalue()
+        assert ctx.mode == "local"
+        assert agent.system == before
+
+    def test_missing_context_reports_instead_of_crashing(self):
+        agent = Agent(ScriptedProvider([]), model="m", permissions=allow_read_only)
+        console = Console(file=io.StringIO(), width=100)
+        repl = Repl(agent, console, input_fn=lambda prompt: "")
+        repl._command("/env")
+        assert "no env context" in console.file.getvalue()
 
 
 class TestToolsCommand:

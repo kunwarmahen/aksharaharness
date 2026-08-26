@@ -2173,6 +2173,19 @@ def approved(name: str, args: dict) -> bool:
             anything with hands, memory and a loop. Approve the writes, deny one
             on purpose, watch it adapt.
           </p>
+          <p>
+            One that feels like magic the first time: <b>the full harness
+            already knows where it is</b>. Its system prompt carries today's
+            date and timezone, your machine and folder — and your city,
+            worked out once from your public IP when the session starts.
+            Ask “what's the temperature outside?” and it answers for where
+            you actually are instead of interrogating you about which city
+            you mean; the same prompt tells it to try its tools before
+            asking you for any fact it could find itself. Not comfortable
+            sending your city along with every request? <code>/env local</code>
+            keeps the machine facts and drops the location;
+            <code>/env off</code> goes back to asking-you-everything.
+          </p>
           <p>What you built maps almost one-to-one onto the big tools:</p>
         </div>
         <div class="tblwrap">
@@ -2364,6 +2377,17 @@ def approved(name: str, args: dict) -> bool:
                   logged in, if you sign in once yourself
                 </td>
                 <td><span class="cite">notes/28-browser-tools.md</span></td>
+              </tr>
+              <tr>
+                <td>
+                  Session awareness: it knows the date, your timezone, your
+                  city — so it stops asking what it could find out
+                </td>
+                <td>
+                  <span class="cite"
+                    >notes/29-environment-awareness.md</span
+                  >
+                </td>
               </tr>
             </tbody>
           </table>

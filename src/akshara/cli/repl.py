@@ -46,6 +46,10 @@ HELP = """[bold]commands[/bold]
   /tools             list registered tools and their schemas ([off] = pulled)
   /tools off|on NAME pull or restore tools MID-SESSION (globs ok:
                      browser_*, mcp__slack__*); applies to the very next call
+  /env [off|local|full]
+                     show what the agent auto-detected about your machine/
+                     location, or switch session awareness (bare = show;
+                     full adds your city via one public-IP lookup)
   /mcp               list connected mcp servers
   /mcp add ...       connect a server MID-SESSION: /mcp add NAME URL, or
                      /mcp add NAME COMMAND [ARGS...] (asks whether to save)
@@ -353,6 +357,8 @@ class Repl:
                 self.console.print("[green]history cleared[/green]")
             case "yolo":
                 self._yolo_command(arg)
+            case "env":
+                self._env_command(arg)
             case "save":
                 self._save_session(arg or "default")
             case "load":
@@ -567,6 +573,32 @@ class Repl:
             self.console.print("[green]permission prompts back on -- "
                                "risky calls ask first[/green]")
 
+    # ---- session awareness ------------------------------------------------------
+
+    def _env_command(self, arg: str) -> None:
+        """/env [off|local|full]: show or switch what the agent knows about
+        its surroundings ([notes/29](../notes/29-environment-awareness.md)).
+        A flip recomposes agent.system immediately -- the next model call,
+        even one mid-turn, sees the new level. Agents built without an
+        EnvContext (builds, embedders) report instead of crashing."""
+        ctx = getattr(self.agent, "env_context", None)
+        if ctx is None:
+            self.console.print("[red]this session has no env context[/red]")
+            return
+        wanted = arg.strip().lower()
+        if wanted:
+            try:
+                ctx.flip(wanted)
+            except ValueError:
+                self.console.print(
+                    f"[red]usage: /env [off|local|full][/red]")
+                return
+            self.console.print(f"[green]env context -> {ctx.mode}[/green]"
+                               " [dim](applies to the next model call)[/dim]")
+        # bare, or after a flip: show exactly what the model now sees.
+        # markup OFF -- hostnames and paths may contain rich syntax.
+        self.console.print(ctx.panel(), markup=False, highlight=False)
+
     # ---- cost ---------------------------------------------------------------
 
     def _cost_line(self) -> str:
@@ -710,6 +742,13 @@ class Repl:
         except Exception as exc:  # corrupt/newer payload must not kill the REPL
             self.console.print(f"[red]restore failed: {exc}[/red]")
             return
+        # Checkpoints store the COMPOSED system (stale facts included), so
+        # recompose from the live EnvContext -- a restored session gets
+        # fresh context, not last Tuesday's copy
+        # ([notes/29](../notes/29-environment-awareness.md)).
+        ctx = getattr(self.agent, "env_context", None)
+        if ctx is not None:
+            ctx.reapply()
         self.console.print(f"[green]{summary}[/green]")
 
     def _switch_provider(self, name: str) -> None:

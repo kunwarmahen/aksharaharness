@@ -73,6 +73,9 @@ button.chip:hover { border-color: var(--accent); }
 .chip-static { cursor: default; }
 /* yolo mode: the chip itself is the standing warning (mirrors the REPL prompt) */
 .chip-yolo { border-color: var(--danger); color: var(--danger); font-weight: 600; }
+/* env awareness at 'full': lit, not alarming — accent marks that location
+   is in play (the tooltip carries what exactly the agent knows) */
+.chip-env-full { border-color: var(--accent); color: var(--accent); }
 .caret { color: var(--ink-dim); margin-left: 4px; font-size: 11px; }
 .ctxbar {
   display: inline-block;

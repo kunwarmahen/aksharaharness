@@ -19,11 +19,13 @@ from akshara.config import (
     _load_dotenv,
     browser_profile,
     default_context_window,
+    default_env_context,
     default_model,
     default_tool_select,
     disabled_tool_patterns,
     load_settings,
 )
+from akshara.env_context import EnvContext
 from akshara.errors import ConfigError, ImageError, ToolError, UserUnavailable
 from akshara.images import load_image_block
 from akshara.mcp import (MCPError, MCPManager, load_mcp_configs,
@@ -138,6 +140,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "list_available_tools always load). Auto-"
                              "enables at K=12 above 20 tools; 0 forces it "
                              "off. Same as $AKSHARA_TOOLS_PER_TURN")
+    parser.add_argument("--env-context", choices=["off", "local", "full"],
+                        default=None, dest="env_context",
+                        help="session awareness: inject auto-detected "
+                             "context (time/timezone, host, working dir; "
+                             "'full' adds your city via ONE public-IP "
+                             "lookup to ipinfo.io) into the system prompt, "
+                             "plus a try-tools-before-asking policy line. "
+                             "Default from $AKSHARA_ENV_CONTEXT (full)")
     parser.add_argument("prompt_positional", nargs="?", metavar="PROMPT",
                         help="same as --prompt (akshara \"what is in README.md?\")")
     return parser
@@ -343,6 +353,23 @@ def main(argv: list[str] | None = None) -> int:
                         else default_context_window(provider_name)),
         permissions=gate,
     )
+
+    # Session awareness ([notes/29](../notes/29-environment-awareness.md)):
+    # capture the operator's --system as the composition base, collect
+    # facts for the starting level (one geo lookup at most), and compose
+    # onto agent.system. Flips later are live -- /env (REPL) and the env
+    # chip (web) recompose mid-session without a restart.
+    try:
+        env_ctx = EnvContext(args.env_context or default_env_context(),
+                             Path(args.cwd))
+        env_ctx.attach(agent)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if env_ctx.geo_error:
+        console.print(f"[dim]env context: location lookup failed "
+                      f"({env_ctx.geo_error}); continuing without[/dim]")
+
     if args.subagents:
         enable_subagents(agent, console)
 

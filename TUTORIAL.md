@@ -864,6 +864,17 @@ a tool off for the rest of the session and `/tools on bash` brings it
 back — handy when you want the agent to answer without touching
 anything. The web UI's tools panel is the same idea with switches.
 
+One that feels like magic the first time: **the full harness already
+knows where it is**. Its system prompt carries today's date and
+timezone, your machine and folder — and your city, worked out once from
+your public IP when the session starts. Ask *"what's the temperature
+outside?"* and it answers for where you actually are instead of
+interrogating you about which city you mean; the same prompt tells it
+to try its tools before asking you for any fact it could find itself.
+Not comfortable sending your city along with every request? `/env local`
+keeps the machine facts and drops the location, `/env off` goes back to
+asking-you-everything ([notes/29](notes/29-environment-awareness.md)).
+
 One more superpower lives in the full harness: **plugging in new hands
 while it runs**. MCP is a standard plug for other people's tools — say
 a GitHub server or a database server — and the full harness can attach
@@ -921,6 +932,7 @@ Each topic has a short, plain-written note with the war stories:
 | A browser window on your agent — and a tool for asking *you* things | [notes/22](notes/22-web-ui.md) |
 | Tools that make it self-reliant: glob, todos, web fetch, background jobs, seeing pictures | [notes/23](notes/23-glob.md) · [notes/24](notes/24-todo-lists.md) · [notes/25](notes/25-web-fetch.md) · [notes/26](notes/26-background-bash.md) · [notes/27](notes/27-read-image.md) |
 | Operating web apps (JS-rendered pages) on a headless browser: browser_open/click/fill/close — and staying logged in, if you sign in once yourself | [notes/28](notes/28-browser-tools.md) |
+| Session awareness: it knows the date, your timezone, your city — so it stops asking what it could find out | [notes/29](notes/29-environment-awareness.md) |
 | Too many tools? Per-turn selection, the always-loaded core, and switching tools off mid-conversation | [notes/17](notes/17-tool-selection.md) |
 
 And the best exercise known to man: point your finished `agent.py` at

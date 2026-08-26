@@ -66,7 +66,7 @@ renderer over it.
 
 | Server → browser | Meaning |
 |---|---|
-| `state` | provider/model/tools/usage/utilization snapshot |
+| `state` | provider/model/tools/usage/utilization/env-awareness snapshot |
 | `start` · `delta` · `thinking_delta` | a response is streaming |
 | `tool_start` · `tool_result` | card opened / filled (args, output, error?) |
 | `permission_request` | approve / deny / edit, with the tool's own summary |
@@ -82,7 +82,8 @@ connect, a refresh or a second tab rejoins mid-conversation: state,
 any still-pending question, then a replay rendered in the same shapes
 as the live feed. Plain request/response controls stay REST
 (`/api/message`, `/api/model`, `/api/provider`, `/api/permissions`,
-`/api/tools`, `/api/save`, `/api/load`, `/api/compact`, `/api/clear`),
+`/api/env-context`, `/api/tools`, `/api/save`, `/api/load`,
+`/api/compact`, `/api/clear`),
 and mutating ones refuse to run mid-turn (409) — the REPL serves slash
 commands between turns too; same single-operator assumption. Two
 deliberate exceptions skip that guard:
@@ -100,6 +101,10 @@ deliberate exceptions skip that guard:
 * `/api/mcp/toggle` — the same soft switch pointed at a whole MCP
   server's toolset (`MCPManager.set_enabled`, process stays warm);
   skips the idle guard for exactly the same live-consulted reason.
+* `/api/env-context` — flips session awareness (off ⇄ local ⇄ full);
+  the composed system prompt is consulted per request, so a flip lands
+  on the running turn's next model call
+  ([29-environment-awareness.md](29-environment-awareness.md)).
 
 The rest of the MCP family DOES take the guard, deliberately:
 `POST /api/mcp/add` spawns child processes and registers tools (and
@@ -116,12 +121,15 @@ launches; remove always forgets it ([09-mcp.md](09-mcp.md)).
 
 All of these broadcast a fresh `state` so other open tabs follow
 along. The top-bar mode chip shows the permission mode — red while
-yolo — and clicking it flips; the ⚙ servers & tools chip opens a
-panel holding both halves: the MCP rows first (health dot, transport
+yolo — and clicking it flips; the env chip beside it shows the session-
+awareness level and cycles off ⇄ local ⇄ full on click (its tooltip
+carries the exact fact sheet the model sees,
+[29-environment-awareness.md](29-environment-awareness.md)); the ⚙
+servers & tools chip opens a panel holding both halves: the MCP rows first (health dot, transport
 badge, `saved` tag, per-server switch, a two-step remove button whose
 first click arms "sure?" instead of trusting a native dialog), then
 the tool switches with a count of how many are off. Same objects back
-the REPL's `/yolo`, `/tools off|on`, and `/mcp` commands
+the REPL's `/yolo`, `/env`, `/tools off|on`, and `/mcp` commands
 ([06-cli.md](06-cli.md)). Sessions without an MCP manager (the
 library path) simply hide the servers half.
 

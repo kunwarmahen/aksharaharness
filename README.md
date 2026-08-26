@@ -53,9 +53,33 @@ uv run akshara --yolo                                 # no permission prompts (c
                                                       #   mid-session (web UI: mode chip)
 uv run akshara --cache                                # prompt-cache breakpoints on
 uv run akshara --resume                               # restore the newest checkpoint
+uv run akshara --env-context local                    # machine facts only (default: full)
 uv run akshara "summarize README.md"                  # one-shot prompt, then exit
 uv run akshara --image photo.png "what's in this picture?"   # vision one-shot
 ```
+
+### It knows where (and when) it is
+
+Sessions start aware instead of clueless: the system prompt carries your
+time and timezone, host and working directory — and, by default, your
+city from ONE public-IP lookup at startup. Ask *"what's the temperature
+outside?"* and it answers for where you actually are, fetching the
+weather with its own tools — it doesn't burn a turn asking which city
+you're in. The same prompt tells it to try its tools before asking you
+for any fact it could discover itself; questions stay reserved for what
+only you know — preferences, permissions, irreversible calls.
+
+Three levels (`AKSHARA_ENV_CONTEXT` / `--env-context` set the start,
+`/env` or the web UI's env chip flip it live):
+
+| level | what the agent gets |
+|---|---|
+| `full` *(default)* | machine facts **+ your city** — one keyless lookup to ipinfo.io per session |
+| `local` | machine facts only; nothing leaves the machine beyond the chat itself |
+| `off` | nothing injected — asks you everything, as before |
+
+One honest tradeoff on `full`: your city rides inside every request sent
+to your LLM provider. If you'd rather share nothing, `local` or `off`.
 
 ### One-command starts
 
