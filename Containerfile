@@ -25,6 +25,11 @@ RUN uv sync --frozen --extra web
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+# In a container stdout is a pipe, so Python buffers it in blocks and the
+# container log would stay EMPTY until the process exits. Force line
+# buffering so 'container-logs' actually shows something.
+ENV PYTHONUNBUFFERED=1
+
 # A dedicated user: the agent's tools run inside this filesystem, so
 # they shouldn't be root in it either.
 RUN useradd -m akshara && chown -R akshara:akshara /app

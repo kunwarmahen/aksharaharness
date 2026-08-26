@@ -97,6 +97,10 @@ Run it bare for a numbered menu, or name what you want:
 ./start.sh web-stop           #   local' pins Ollama) — plus stop,
 ./start.sh web-status         #   status, restart and web-logs to
 ./start.sh web-logs           #   follow its output
+
+./start.sh container          # podman/docker: one build + run (menu:
+./start.sh container start    #   start, stop, status, rebuild, restart,
+./start.sh container stop     #   logs, yes to auto-approve)
 ```
 
 Everything after the preset passes straight through (`./start.sh local
@@ -110,6 +114,18 @@ checks — nothing else beyond bash and uv.
 The UI can also run inside a container — handy to keep the agent's
 hands off your real filesystem entirely, or to put it on an always-on
 box. The image carries code only; keys arrive at run time.
+
+The easy road is `./start.sh container start`: it builds the image if
+missing, runs it detached, and waits until the UI answers at `/`.
+Nothing else is ever stopped to make room — if the default **port 8321**
+is already serving your other server, it simply picks the next free one
+(8322–8342) and keeps 8321 untouched, and an explicit `--port` that is
+busy is refused. `./start.sh container` opens a menu (start / stop /
+status / restart / logs, plus `yes` to auto-approve tool calls).
+`--model`, `--timeout`, `--max-turns` pass through; `stop` needs no
+arguments — it always targets the container this script started.
+
+Prefer the raw commands? Same image, your own port choices:
 
 ```bash
 podman build --format docker -t localhost/akshara-web .
