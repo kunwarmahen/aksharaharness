@@ -76,7 +76,13 @@ def _load_dotenv() -> None:
     path = Path(".env")
     if not path.is_file():
         return
-    for raw in path.read_text().splitlines():
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        # present but unreadable (root-owned, restrictive container
+        # mount): treat as absent -- real env vars still work
+        return
+    for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

@@ -81,6 +81,46 @@ Keys, models and URLs still come from `.env`; the script only adds the
 flags that make each setup different. It needs `curl` for its health
 checks — nothing else beyond bash and uv.
 
+### Run in a container (podman/docker)
+
+The UI can also run inside a container — handy to keep the agent's
+hands off your real filesystem entirely, or to put it on an always-on
+box. The image carries code only; keys arrive at run time.
+
+```bash
+podman build --format docker -t localhost/akshara-web .
+# (--format docker so the HEALTHCHECK survives; OCI images ignore it)
+
+# cloud road: mount your .env read-only (or pass -e ANTHROPIC_API_KEY=...).
+# --userns=keep-id lets the in-container user read your 600-perm .env.
+podman run -d --name akshara-web --userns=keep-id -p 8400:8321 \
+    -v ./.env:/app/.env:ro localhost/akshara-web
+
+# local road: reach Ollama on the HOST via its special name. The
+# trailing flags compose with the image's entrypoint; --provider is
+# needed because env vars alone don't tip the key-based guess.
+podman run -d --name akshara-local -p 8401:8321 \
+    -e OLLAMA_BASE_URL=http://host.containers.internal:11434/v1 \
+    -e OLLAMA_MODEL=qwen3.8 \
+    localhost/akshara-web --web --host 0.0.0.0 --provider ollama
+
+podman logs -f akshara-web        # watch it boot
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8400/
+```
+
+Notes worth knowing:
+
+* **Port 8321 is fixed inside** (the health check probes it); publish it
+  wherever you like with `-p`.
+* **The tools run in the container**, not on your machine — `read_file`
+  sees `/app`, so give it a workspace if you want it to touch your
+  files: mount one and add args after the image name (they compose):
+  `-v ./workspace:/workspace localhost/akshara-web --web --cwd /workspace`.
+* **Sessions live in `/app/.akshara/`** and vanish with the container;
+  add `-v akshara-state:/app/.akshara` to keep checkpoints across runs.
+* Docker users: swap `podman` → `docker`, and replace
+  `host.containers.internal` with `host.docker.internal`.
+
 Builder mode ([notes/18](notes/18-builder-mode.md)): spec → files →
 acceptance checks re-run INDEPENDENTLY (never trusting the model's
 word); a red verification is fed back into the same conversation for a
