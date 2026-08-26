@@ -219,6 +219,27 @@ The parts that earned their keep:
   first (`pkill -P`), then the pid, wait up to 5s, then SIGKILL. The
   port-closed check after stop is the real test, not the exit code.
 
+## In a container
+
+The UI also runs boxed (`Containerfile` in the repo root): code only in
+the image, keys mounted or env-passed at run time. Two lessons from the
+first build:
+
+* **An unreadable `.env` used to crash startup.** A rootless bind mount
+  of a 600-perm file is invisible to the container's user, and
+  `_load_dotenv` took that personally. Now an `OSError` on read means
+  "treat as absent" — real env vars still work, which is exactly the
+  loader's own stated philosophy.
+* **Env vars don't tip the provider guess.** `OLLAMA_BASE_URL` set but
+  no cloud key anywhere → `_guess_provider` still errors, because it
+  only recognizes keys. Container runs must pass
+  `--provider ollama` explicitly; the image therefore uses an
+  ENTRYPOINT so run-time flags compose instead of replacing the default.
+* The reward: with `host.containers.internal` the container reached the
+  host's Ollama unprompted, and a POST to `/api/message` came back with
+  the exact reply requested — agent loop, toolset and all, fully inside
+  the box. Tools see only `/app`, so the container *is* the sandbox.
+
 ## What the tests pin
 
 52 new offline tests, no network, no key:

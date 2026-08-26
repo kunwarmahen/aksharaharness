@@ -1,0 +1,26 @@
+# Build context: source and packaging only. Everything else stays out —
+# above all .env (keys must never enter an image layer).
+.git
+.gitignore
+.env
+.env.example
+.venv
+__pycache__
+*.py[co]
+.pytest_cache
+.cache
+.config
+.local
+.akshara
+.claude
+.harness
+app
+examples
+notes
+tests
+PLAN.md
+start.sh
+Containerfile
+.containerignore
+*.html
+*.ics
