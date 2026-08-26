@@ -194,6 +194,28 @@ def browser_profile() -> Path | None:
     return path if path.is_absolute() else Path.cwd() / path
 
 
+def default_env_context() -> str:
+    """Session awareness level from $AKSHARA_ENV_CONTEXT.
+
+    'full' (default) injects auto-detected context -- time/timezone, host,
+    working directory, plus your city from ONE public-IP lookup to
+    ipinfo.io -- into the system prompt; 'local' keeps machine facts only;
+    'off' restores the ask-the-user-everything behavior. Same semantics as
+    --env-context, which this backs when .env is more convenient. An unset
+    or blank value means full (blank = template residue from copying
+    .env.example); anything else is config corruption -- fail loudly.
+    """
+    raw = os.environ.get("AKSHARA_ENV_CONTEXT")
+    if raw is None or not raw.strip():
+        return "full"
+    value = raw.strip().lower()
+    if value not in ("off", "local", "full"):
+        raise ConfigError(
+            f"AKSHARA_ENV_CONTEXT must be off|local|full, got {raw!r}"
+        )
+    return value
+
+
 def disabled_tool_patterns() -> list[str]:
     """Glob patterns from $AKSHARA_DISABLED_TOOLS (comma-separated).
 

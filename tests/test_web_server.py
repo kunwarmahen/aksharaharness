@@ -459,6 +459,63 @@ def test_permissions_endpoint_rejects_fixed_gate():
     response = client.post("/api/permissions", json={"mode": "yolo"})
     assert response.status_code == 400
     assert "fixed" in response.json()["detail"]
+
+
+# ---- session awareness (env context) ---------------------------------------------
+
+
+def _attach_ctx(agent, mode="local"):
+    """Wire an EnvContext exactly like cli/main.py does post-construction.
+    Only ever started at 'local'/'off' here -- 'full' would hit the geo
+    seam, and this suite stays offline."""
+    from akshara.env_context import EnvContext
+
+    ctx = EnvContext(mode)
+    ctx.attach(agent)
+    return ctx
+
+
+def test_state_reports_no_env_context_by_default():
+    session, _ = make_session([assistant_text("hi")])
+    client = TestClient(make_app(session))
+    assert client.get("/api/state").json()["env_context"] is None
+
+
+def test_env_context_flips_via_rest_and_broadcasts_to_tabs():
+    session, agent = make_session([assistant_text("hi")])
+    _attach_ctx(agent, "local")
+    client = TestClient(make_app(session))
+
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "state"  # initial snapshot
+        flipped = client.post("/api/env-context", json={"mode": "off"})
+        assert flipped.status_code == 200, flipped.text
+        assert flipped.json()["env_context"]["mode"] == "off"
+        env = ws.receive_json()
+        assert env["type"] == "state"
+        assert env["env_context"]["mode"] == "off"
+
+    # off means off: the system prompt is None again -- byte-identical to
+    # the pre-awareness wire shape.
+    assert agent.system is None
+    back = client.post("/api/env-context", json={"mode": "local"}).json()
+    assert "Working directory:" in back["env_context"]["block"]
+    assert "Working directory:" in agent.system
+
+
+def test_env_context_validation_and_missing_context():
+    session, agent = make_session([assistant_text("hi")])
+    client = TestClient(make_app(session))
+    # no EnvContext attached: clean 400, not a 500
+    missing = client.post("/api/env-context", json={"mode": "local"})
+    assert missing.status_code == 400
+    assert "no env context" in missing.json()["detail"]
+
+    _attach_ctx(agent, "local")
+    assert client.post("/api/env-context",
+                       json={"mode": "psychic"}).status_code == 400
+    assert client.post("/api/env-context", json={}).status_code == 400
+    assert agent.env_context.mode == "local"  # failures never half-flip
     assert client.get("/api/state").json()["mode"] == "ask"
 
 

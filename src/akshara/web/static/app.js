@@ -126,6 +126,14 @@ function applyHeader(s) {
   const yolo = s.mode === "yolo";
   $("#mode-label").textContent = s.mode || "ask";
   $("#chip-mode").classList.toggle("chip-yolo", yolo);
+  // session awareness chip: label is the level, tooltip carries the exact
+  // fact sheet the model sees (null when the host built no EnvContext)
+  const ec = s.env_context;
+  $("#env-label").textContent = ec ? ec.mode : "—";
+  $("#chip-env").classList.toggle("chip-env-full", !!ec && ec.mode === "full");
+  $("#chip-env").title = (ec && ec.block)
+    ? `session awareness — click to cycle off ⇄ local ⇄ full\n\n${ec.block}`
+    : "session awareness — click cycles off ⇄ local ⇄ full";
   $("#chip-cost").textContent = s.cost_line || "";
   // tools chip: "N" live, "+M off" when the operator pulled some
   const off = (s.disabled_tools || []).length;
@@ -619,6 +627,17 @@ $("#chip-mode").onclick = () => {
     toast(next === "yolo"
       ? "yolo on — tools run without asking"
       : "permission prompts back on");
+  });
+};
+// Session awareness: cycle off -> local -> full -> off. Mid-turn allowed on
+// purpose -- the recomposed system lands on the turn's next model call.
+const ENV_CYCLE = { off: "local", local: "full", full: "off" };
+$("#chip-env").onclick = () => {
+  const next = ENV_CYCLE[$("#env-label").textContent] || "local";
+  post("/api/env-context", { mode: next }).then((s) => {
+    if (!s) return;
+    applyHeader(s);
+    toast(`env context: ${next}`);
   });
 };
 $("#chip-provider").onclick = () => {

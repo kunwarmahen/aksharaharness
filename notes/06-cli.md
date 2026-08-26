@@ -256,6 +256,26 @@ manager object, so there is no second bookkeeping to drift:
   never as tracebacks — a bad command name is operator input to fix,
   not a bug to report.
 
+## /env — what the agent knows about its surroundings
+
+Sessions don't start blind anymore: the system prompt carries
+auto-detected context — time and timezone, user@host + OS, working
+directory, and at the top level your city from ONE public-IP lookup to
+ipinfo.io ([29-environment-awareness.md](29-environment-awareness.md)).
+The terminal face:
+
+```
+/env                        # show the level + the exact fact sheet
+/env off|local|full         # flip it — applies to the very next model call
+```
+
+The starting level comes from `--env-context` or `$AKSHARA_ENV_CONTEXT`
+(default `full`). Flips recompose the prompt LIVE — mid-turn included,
+the same no-guard argument as `/yolo`: the loop reads `agent.system` per
+request. And `/load` re-composes after restoring a checkpoint, because
+checkpoints store the *composed* string — old sessions must not
+resurrect yesterday's stale facts as today's truth.
+
 ## One command to start it: `start.sh`
 
 The CLI grew more flags than a newcomer wants to memorize on day one,

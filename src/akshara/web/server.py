@@ -388,6 +388,10 @@ class WebSession:
             # "ask" | "yolo" -- agents built with a bare gate (tests,
             # embedders) report the fixed default rather than crashing.
             "mode": getattr(agent.permissions, "mode", "ask"),
+            # Session awareness snapshot ([notes/29]); None when the host
+            # built the agent without an EnvContext.
+            "env_context": (agent.env_context.describe()
+                            if hasattr(agent, "env_context") else None),
             "tools": agent.registry.names(),
             # Runtime-disabled subset of ``tools`` (the /api/tools panel's
             # toggles); empty for a stock session.
@@ -596,6 +600,28 @@ def make_app(session: WebSession, static_dir: Path | None = None,
         session.broadcast({"type": "state", **session.state()})
         return session.state()
 
+    @app.post("/api/env-context")
+    async def set_env_context(req: Request) -> dict[str, Any]:
+        """Flip session awareness (off/local/full). Deliberately NO
+        require_idle(): the composed system is consulted at each iteration's
+        request, so a flip lands on the running turn's next model call --
+        same argument as the permission flip. The flip itself runs in a
+        worker thread (to_thread): upgrading to 'full' may do the one-time
+        geo lookup, which must never block the event loop. Broadcasts state
+        so every open tab's chip follows along."""
+        require_ready()
+        ctx = getattr(session.agent, "env_context", None)
+        if ctx is None:
+            raise HTTPException(400, "this session has no env context "
+                                     "(built without session awareness)")
+        mode = (await req.json()).get("mode")
+        try:
+            await asyncio.to_thread(ctx.flip, mode)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        session.broadcast({"type": "state", **session.state()})
+        return session.state()
+
     @app.get("/api/tools")
     def tools_list() -> list[dict[str, Any]]:
         """The tools panel's data: everything registered, with enough
@@ -775,6 +801,11 @@ def make_app(session: WebSession, static_dir: Path | None = None,
                           provider_factory=provider_factory or get_provider)
         except Exception as exc:
             raise HTTPException(400, f"restore failed: {exc}") from exc
+        # Same rule as the REPL's load path: checkpoints store the COMPOSED
+        # system, so recompose from the live EnvContext for fresh facts.
+        ctx = getattr(session.agent, "env_context", None)
+        if ctx is not None:
+            ctx.reapply()
         return session.state()
 
     @app.post("/api/compact")
