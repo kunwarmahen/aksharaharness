@@ -248,6 +248,18 @@ first build:
   the exact reply requested — agent loop, toolset and all, fully inside
   the box. Tools see only `/app`, so the container *is* the sandbox.
 
+Daily use is one command, `./start.sh container start` (menu item 6):
+build if the image is missing, run detached, and wait for `/` to
+answer. Your other server's port is sacred — the container defaults to
+8321 and only *moves up* (8322–8342) when that is already serving
+something, so launching it can never kill a web UI you left running.
+`stop`, `status`, `restart`, `logs` are the companions — and the script
+only ever touches a container it started itself (`akshara-web`). A `yes`
+menu answer adds `--auto-approve` (`AKSHARA_AUTO_APPROVE`); `--model`,
+`--timeout`, `--max-turns` pass through to the CLI. An explicit
+`--port` already busy is refused — it tells you the port, it doesn't
+take it.
+
 ## What the tests pin
 
 52 new offline tests, no network, no key:

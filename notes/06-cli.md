@@ -283,9 +283,10 @@ so the repo root ships a bash launcher that turns the common setups
 into names:
 
 ```
-./start.sh              # numbered menu: local / cloud / web / local-web
+./start.sh              # numbered menu: local / cloud / web / local-web / container
 ./start.sh local        # --provider ollama, after checking the server is up
 ./start.sh cloud        # picks a dialect from whichever key .env actually has
+./start.sh container    # podman: build image, run detached (menu: start/stop/status/restart)
 ```
 
 Design rules that kept it honest:

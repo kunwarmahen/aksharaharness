@@ -19,6 +19,13 @@
 #   ./start.sh web-start [local|cloud] [--port N]    start in the background
 #   ./start.sh web-stop / web-status / web-restart / web-logs
 #
+# The same web UI can also live in a container, built and run by podman
+# (or docker):
+#
+#   ./start.sh container-build                     build the image
+#   ./start.sh container-start [local|cloud] [--port N]
+#   ./start.sh container-stop / container-status / container-restart / container-logs
+#
 # Presets only pin what makes them different; keys, models and URLs still
 # come from .env (real environment variables beat .env, as always).
 
@@ -87,6 +94,7 @@ web_is_running() {
 }
 
 # Find --port N (or --port=N) among launch arguments; default matches akshara.
+# Empty output = "no --port given" — callers then fall back to their default.
 web_port_from_args() {
     local prev="" a
     for a in "$@"; do
@@ -94,7 +102,40 @@ web_port_from_args() {
         if [[ "$a" == --port=* ]]; then echo "${a#--port=}"; return; fi
         prev="$a"
     done
-    echo "8321"
+}
+
+# Is anything listening on 127.0.0.1:PORT?
+port_taken() {
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$1/" 2>/dev/null
+}
+
+# Pick a publish port to use.
+#   pick_port <N>           — explicit (e.g. --port N): honor it, refuse if busy.
+#   pick_port - or (empty)  — no preference: default if free, else next free up.
+# Prints the chosen port on stdout; reasons on stderr. Exits 1 on a conflict
+# with an EXPLICIT port (we never override a user's choice).
+pick_port() {
+    local want="${1:-}"
+    if [[ -n "$want" && "$want" != "-" ]]; then
+        if port_taken "$want"; then
+            echo "port $want is already in use by something else — this script will NOT kill it." >&2
+            echo "pick a free one: ./start.sh ... --port 8322" >&2
+            return 1
+        fi
+        echo "$want"; return 0
+    fi
+    if ! port_taken 8321; then
+        echo 8321; return 0
+    fi
+    local probe
+    for probe in 8322 8323 8325 8326 8327 8328 8329 8330 8331 8332 8333 8334 8335 8336 8337 8338 8339 8340 8341 8342; do
+        if ! port_taken "$probe"; then
+            echo "note: port 8321 is busy (your other server keeps it) — using $probe instead." >&2
+            echo "$probe"; return 0
+        fi
+    done
+    echo "no free port in 8321-8342 — pass one: ./start.sh ... --port N" >&2
+    return 1
 }
 
 web_start() {
@@ -132,16 +173,7 @@ http://127.0.0.1:$(cat "$WEB_PORT_FILE" 2>/dev/null || echo 8321)"
     flags+=(--web)
 
     local port
-    port="$(web_port_from_args "$@")"
-
-    # If the port already answers, a fresh server would just die on bind —
-    # usually an old instance started by hand. Say so instead of failing
-    # mysteriously in the log.
-    if curl -s -o /dev/null -m 1 "http://127.0.0.1:$port/" 2>/dev/null; then
-        echo "something is already serving on port $port." >&2
-        echo "stop that first, or choose another: ./start.sh web-start --port 8322" >&2
-        return 1
-    fi
+    if ! port="$(pick_port "$(web_port_from_args "$@")")"; then return 1; fi
 
     mkdir -p .akshara
     echo "---- $(date '+%Y-%m-%d %H:%M:%S') starting: ${flags[*]} $*" >>"$WEB_LOG_FILE"
@@ -212,6 +244,285 @@ web_logs() {
     tail -n "${1:-40}" "$WEB_LOG_FILE" # Ctrl-C stops following
 }
 
+# --- the web UI in a podman container ---------------------------------------
+# The image carries code only (see Containerfile); keys come in at run time.
+# The container lives in the podman daemon, so its "stop" and "is it up?"
+# are asked of podman itself — no pid file needed.
+
+CONTAINER_NAME="localhost/akshara-web"   # image name (podman's localhost/ tag)
+CONTAINER_ID="akshara-web"               # running container name
+CONTAINER_PORT_FILE=".akshara/akshara-web.port"
+
+# podman, or docker if the host prefers that (README documents both).
+container_engine() {
+    if command -v podman >/dev/null 2>&1; then echo podman
+    elif command -v docker >/dev/null 2>&1; then echo docker
+    else
+        echo "error: neither 'podman' nor 'docker' found on PATH." >&2
+        echo "       (sudo apt install podman — or skip containers: './start.sh web-start')" >&2
+        return 1
+    fi
+}
+
+# True (0) if a container named akshara-web is RUNNING.
+container_is_up() {
+    local eng
+    eng="$(container_engine)" || return 1
+    "$eng" container inspect --format '{{.State.Running}}' "$CONTAINER_ID" 2>/dev/null \
+        | grep -q true
+}
+
+# Stopped/exited containers still HOLD their name in podman ("name ... is
+# already in use" on the next run) — so a container-stop followed by
+# a container-start used to fail, until a retry or second attempt happened
+# to land after cleanup. Remove any containers that own our name but are
+# not running. Only ever touches our own name, never foreign containers.
+container_reclaim_name() {
+    local eng ids
+    eng="$(container_engine)" || return 0
+    ids="$("$eng" container ps -a --no-trunc --filter "name=^$CONTAINER_ID$" \
+            --format '{{.ID}}  {{.State}}' 2>/dev/null \
+            | awk 'tolower($2) !~ /running/ { print $1 }')"
+    local id
+    for id in $ids; do
+        "$eng" container rm -f "$id" >/dev/null 2>&1 || true
+        echo "(removed a stopped container of ours that still held the name: ${id:0:12})"
+    done
+    return 0
+}
+
+# True (0) if the image is already built.
+container_image_ready() {
+    local eng
+    eng="$(container_engine)" || return 1
+    "$eng" image exists "$CONTAINER_NAME" 2>/dev/null
+}
+
+# True (0) if something the image is built FROM is newer than the image.
+# (Only a hint — podman builds are content-cached, so a "stale" image may
+# still be perfectly current; this avoids asking twice for nothing.)
+container_image_stale() {
+    local eng img_ts code_ts f
+    eng="$(container_engine)" || return 1
+    img_ts="$("$eng" image inspect --format '{{.Created}}' "$CONTAINER_NAME" 2>/dev/null | head -1)"
+    [[ "$img_ts" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}) ]] || return 1
+    img_ts="${BASH_REMATCH[1]}"
+    code_ts=0
+    for f in Containerfile .containerignore pyproject.toml uv.lock src; do
+        [[ -e "$f" ]] && code_ts=$(( $(stat -c %Y "$f") > code_ts ? $(stat -c %Y "$f") : code_ts ))
+    done
+    code_ts=$(( code_ts / 3600 ))
+    img_ts=$(( 10#$(date -u -d "$img_ts" +%s) / 3600 ))
+    (( code_ts > img_ts ))
+}
+
+container_build() {
+    local eng
+    eng="$(container_engine)" || return 1
+    # Build means BUILD. But if a container is already using the image,
+    # ask before clobbering under its feet.
+    if container_is_up; then
+        local ans="n"
+        [[ -t 0 ]] && read -rp "a container is running on this image — rebuild under its feet? [y/N] " ans
+        case "${ans:-n}" in
+            [yY]*) ;;
+            *)
+                echo "skipped — the running container keeps its image."
+                echo "(stop it: ./start.sh container-stop, then container-build)"
+                return 0
+                ;;
+        esac
+    fi
+    echo "building $CONTAINER_NAME (layers are cached — usually quick)"
+    # --format docker: emits docker-format so the image's HEALTHCHECK survives.
+    "$eng" build --format docker -t "$CONTAINER_NAME" . || {
+        echo "build failed — fixing the Containerfile or your network, then retry." >&2
+        return 1
+    }
+    echo "built."
+    if container_is_up; then
+        echo "(the running container still has the OLD image — ./start.sh container-restart to use the new one)"
+    fi
+}
+
+container_start() {
+    # Optional first word picks the model road: local | cloud (default).
+    local flavor="cloud"
+    case "${1:-}" in
+        local|cloud) flavor="$1"; shift ;;
+    esac
+
+    local eng
+    eng="$(container_engine)" || return 1
+
+    if container_is_up; then
+        echo "already running:"
+        "$eng" container ps --filter "name=$CONTAINER_ID" --format '  {{.ID}}  {{.Ports}}  {{.Status}}'
+        echo "(stop it first: ./start.sh container-stop)"
+        return 0
+    fi
+
+    if ! container_image_ready; then
+        echo "no image yet ($CONTAINER_NAME is not built)."
+        if [[ -t 0 ]]; then
+            read -rp "build it now? [Y/n] " ans || ans="n"
+        else
+            ans="y"
+        fi
+        case "${ans:-y}" in
+            [nN]*)
+                echo "building it first instead:"
+                echo "  ./start.sh container-build"
+                return 1
+                ;;
+        esac
+        container_build || return 1
+    elif container_image_stale; then
+        echo "note: the image looks older than the code in this directory."
+        echo "      (./start.sh container-build to rebuild — or ignore and use it as-is)"
+    fi
+
+    # A stopped container can still be sitting on the name (podman keeps them
+    # until they are rm'd) — that would make 'container run' fail. Clear it.
+    container_reclaim_name
+
+    # Publish 8321 (fixed inside the container) on a free host port.
+    # Default 8321; if your other server keeps it, we move up — never touch
+    # whatever already owns 8321. An explicit --port is always honored.
+    local port
+    if ! port="$(pick_port "$(web_port_from_args "$@")")"; then return 1; fi
+
+    local env_args=() cmd_args=()
+    case "$flavor" in
+        local)
+            # Ollama stays on the host; containers reach it via its special name.
+            env_args=(-e OLLAMA_BASE_URL=http://host.containers.internal:11434/v1
+                      -e OLLAMA_MODEL="${OLLAMA_MODEL:-$(env_from_dotenv OLLAMA_MODEL)}")
+            cmd_args=(--provider ollama)
+            ;;
+        cloud)
+            # Mount .env read-only; keep-id lets the in-container user read
+            # your 600 perms. (docker lacks keep-id — pass -e ANTHROPIC_API_KEY= instead.)
+            if [[ ! -f .env ]]; then
+                echo "no .env to mount — the container would boot keyless." >&2
+                echo "   create .env (cp .env.example .env), or for now: ./start.sh web-start cloud" >&2
+                return 1
+            fi
+            if [[ "$eng" == "podman" ]]; then
+                env_args=(--userns=keep-id -v "$(pwd)/.env:/app/.env:ro")
+            else
+                env_args=(-v "$(pwd)/.env:/app/.env:ro")
+            fi
+            ;;
+    esac
+
+    # 8321 is fixed inside the image; publish it wherever we like.
+    id="$("$eng" container run -d --name "$CONTAINER_ID" \
+         -p "${port:-8321}:8321" "${env_args[@]}" \
+         "$CONTAINER_NAME" --web --host 0.0.0.0 "${cmd_args[@]}" "$@")" || {
+        echo "container run failed (output above)." >&2
+        "$eng" container rm -f "$CONTAINER_ID" 2>/dev/null || true
+        return 1
+    }
+    echo "started (container ${id:0:12})."
+
+    # Wait until the UI actually answers.
+    local i
+    for i in $(seq 1 40); do
+        if curl -s -o /dev/null -m 1 "http://127.0.0.1:$port/" 2>/dev/null; then
+            echo "$port" >"$CONTAINER_PORT_FILE"
+            echo "opened — http://127.0.0.1:$port in your browser"
+            return 0
+        fi
+        if ! container_is_up; then
+            echo "the container exited while booting. Its log:" >&2
+            "$eng" container logs --tail 20 "$CONTAINER_ID" >&2
+            return 1
+        fi
+        sleep 0.5
+    done
+    echo "still not answering after 20s — check: ./start.sh container-logs" >&2
+    return 1
+}
+
+container_stop() {
+    local eng
+    eng="$(container_engine)" || return 1
+    if container_is_up; then
+        local id
+        id="$("$eng" container stop --time 10 "$CONTAINER_ID")" || {
+            echo "stop failed — force it: $eng container rm --force $CONTAINER_ID" >&2
+            return 1
+        }
+        echo "stopped ($id)."
+    else
+        echo "not running."
+    fi
+    # Podman keeps stopped containers (and their name) around; drop the
+    # record we don't need.
+    rm -f "$CONTAINER_PORT_FILE"
+    echo "(to fully delete the stopped container: ./start.sh container-rm)"
+}
+
+# Fully DELETE the container (only if it is not running). Frees the name.
+container_rm() {
+    local eng
+    eng="$(container_engine)" || return 1
+    if container_is_up; then
+        echo "it is still running — stop it first: ./start.sh container-stop" >&2
+        return 1
+    fi
+    if "$eng" container inspect "$CONTAINER_ID" >/dev/null 2>&1; then
+        local id
+        id="$("$eng" container rm -f "$CONTAINER_ID")"
+        echo "removed ($id)."
+    else
+        echo "no stopped container to remove — none exists."
+    fi
+    rm -f "$CONTAINER_PORT_FILE"
+}
+
+container_status() {
+    local eng
+    eng="$(container_engine)" || return 1
+    if container_image_ready; then
+        echo "image:      $CONTAINER_NAME  (present)"
+    else
+        echo "image:      $CONTAINER_NAME  (NOT built — container-start will build it)"
+    fi
+    if container_is_up; then
+        echo "container:  running"
+        "$eng" container ps --filter "name=$CONTAINER_ID" --format '             {{.ID}}  {{.Ports}}  {{.Status}}'
+        echo "             (stop: ./start.sh container-stop · logs: ./start.sh container-logs)"
+    else
+        rm -f "$CONTAINER_PORT_FILE"
+        echo "container:  stopped.  (start: ./start.sh container-start)"
+    fi
+}
+
+container_logs() {
+    local eng
+    eng="$(container_engine)" || return 1
+    "$eng" container logs --tail "${1:-40}" "$CONTAINER_ID" || {
+        echo "no such container yet — start it first: ./start.sh container-start" >&2
+        return 1
+    }
+}
+
+container_manage() {
+    local cmd="$1"; shift
+    case "$cmd" in
+        container-build)    container_build ;;
+        container-start)    container_start "$@" ;;
+        container-stop)     container_stop ;;
+        container-rm)       container_rm ;;
+        container-status)   container_status ;;
+        container-restart)  container_stop >/dev/null 2>&1; container_start "$@" ;;
+        container-logs)     container_logs "$@" ;;
+        *)                  echo "unknown command: $cmd (try './start.sh --help')" >&2; return 1 ;;
+    esac
+}
+
 web_manage() {
     local cmd="$1"; shift
     case "$cmd" in
@@ -242,6 +553,14 @@ The browser UI can also run in the background, out of your terminal:
   ./start.sh web-status   is it running? where?
   ./start.sh web-restart  stop, then start
   ./start.sh web-logs     show what it has been saying
+
+The same UI can also run inside a container (podman/docker):
+
+  ./start.sh container-build    build the image (cached after the first time)
+  ./start.sh container-start    run it detached — cloud key or Ollama both work
+  ./start.sh container-stop     stop it
+  ./start.sh container-status   is it running? is the image built?
+  ./start.sh container-logs     watch its output
 
 Anything after a preset or command passes through to akshara:
 
@@ -291,6 +610,7 @@ How do you want to run Akshara?
   3) web        chat in your browser instead of the terminal
   4) local-web  local model, but in the browser
   5) web-start  browser chat in the background (./start.sh web-stop ends it)
+  6) container  the web UI inside a podman/docker container
 EOF
 }
 
@@ -307,6 +627,11 @@ if [[ $# -gt 0 ]]; then
             web_manage "$@"
             exit $?
             ;;
+        container-*)
+            # Podman container image: build + run the web UI in a container
+            container_manage "$@"
+            exit $?
+            ;;
         *)
             preset="$1"
             shift
@@ -315,13 +640,14 @@ if [[ $# -gt 0 ]]; then
 else
     menu_text
     if [[ -t 0 ]]; then
-        read -rp "Pick 1-5 (or Ctrl-C to quit): " choice
+        read -rp "Pick 1-6 (or Ctrl-C to quit): " choice
         case "$choice" in
             1) preset="local" ;;
             2) preset="cloud" ;;
             3) preset="web" ;;
             4) preset="local-web" ;;
             5) preset="web-start" ;;
+            6) preset="container" ;;
             *) echo "not a choice: $choice" >&2; exit 1 ;;
         esac
     else
@@ -334,6 +660,13 @@ fi
 # check) — hand it over before the foreground launch path below.
 if [[ "$preset" == "web-start" ]]; then
     web_start "$@"
+    exit $?
+fi
+
+# 'container' (menu option 6): just start it; container_start offers to
+# build the image first if it is missing.
+if [[ "$preset" == "container" ]]; then
+    container_start "$@"
     exit $?
 fi
 
