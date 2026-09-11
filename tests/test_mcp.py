@@ -22,6 +22,7 @@ from akshara.errors import ToolError
 from akshara.mcp import (
     SUPPORTED_VERSIONS,
     MCPError,
+    MCPHttpSession,
     MCPServerConfig,
     forget_server,
     load_mcp_configs,
@@ -406,6 +407,9 @@ HTTP_SERVER_BODY = """\
                 sid = self.headers.get("Mcp-Session-Id")
                 with open(f"{out_dir}/sids.jsonl", "a") as fh:
                     fh.write((sid or "NONE") + "\\n")
+                with open(f"{out_dir}/pvers.jsonl", "a") as fh:
+                    fh.write((self.headers.get(
+                        "MCP-Protocol-Version") or "NONE") + "\\n")
                 if not sid:
                     self._send(400, "application/json", {"error": "no session"})
                 elif method == "tools/list":
@@ -511,6 +515,51 @@ class TestHttpTransport:
         with pytest.raises(MCPError, match="unsupported protocol version"):
             from akshara.mcp import connect_mcp
             connect_mcp(cfg, timeout=5.0)
+
+    def test_subsequent_requests_carry_the_negotiated_version(self, tmp_path):
+        """Spec 2025-06-18: every request AFTER initialize must send
+        MCP-Protocol-Version. Without it a strict server may answer with
+        2025-03-26 semantics -- or refuse outright -- which looks like a
+        broken client for reasons no error message explains. initialize
+        itself cannot carry it: nothing is negotiated yet."""
+        cfg = start_http_server(tmp_path)
+        registry = ToolRegistry()
+        session, _ = register_mcp(registry, cfg, timeout=10.0)
+        try:
+            registry.get("mcp__tiny__add").run({"a": 1, "b": 1},
+                                               ToolContext(cwd=tmp_path))
+            versions = (tmp_path / "pvers.jsonl").read_text().split()
+            assert versions  # tools/list + tools/call both recorded
+            assert all(v == session.protocol_version for v in versions)
+        finally:
+            session.close()
+            stop_http_server()
+
+    def test_refused_version_hands_back_the_connection_pool(self, tmp_path):
+        """A refused handshake must close the transport, exactly as the
+        stdio session reaps its child on the same path."""
+        cfg = start_http_server(tmp_path, "bad")
+        session = MCPHttpSession(cfg, timeout=5.0)
+        try:
+            with pytest.raises(MCPError, match="unsupported protocol version"):
+                session.start()
+            assert session._client.is_closed  # no leaked socket pool
+        finally:
+            stop_http_server()
+
+    def test_close_is_idempotent(self, tmp_path):
+        """Same contract as MCPSession.close. httpx raises RuntimeError --
+        not a TransportError -- when you send on a closed client, so an
+        unguarded second close would blow up inside shutdown paths."""
+        cfg = start_http_server(tmp_path)
+        session = MCPHttpSession(cfg, timeout=10.0)
+        try:
+            session.start()
+            session.close()
+            session.close()  # must not raise
+            assert not session.healthy()
+        finally:
+            stop_http_server()
 
     def test_unreachable_url_is_an_mcperror_not_a_traceback(self):
         from akshara.mcp import connect_mcp

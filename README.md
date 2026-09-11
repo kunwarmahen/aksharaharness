@@ -306,6 +306,11 @@ uv run akshara --mcp-config mcp.json          # connect + discover at startup
 python examples/tiny_mcp_server.py --http     # the same server over Streamable HTTP
 ```
 
+Over HTTP every request after the handshake carries the negotiated
+`MCP-Protocol-Version` header (spec 2025-06-18) — strict remote servers
+reject clients that omit it — and a refused version hands the connection
+straight back instead of leaking it.
+
 Servers are runtime furniture, not just startup wiring: `/mcp` lists
 them, `/mcp add NAME URL` (or `NAME COMMAND [ARGS...]`) connects one
 mid-session — asking whether to remember it in `.akshara/mcp.json` for
@@ -736,7 +741,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 845 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 848 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The

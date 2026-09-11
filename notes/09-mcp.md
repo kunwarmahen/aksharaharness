@@ -35,6 +35,21 @@ supports; if that's not in our known set we REFUSE and say so rather
 than guess at incompatible semantics (spec-conformant: the client owns
 compatibility).
 
+Over HTTP the agreed version then has to be repeated on every later
+request. From spec `2025-06-18` each one carries an
+`MCP-Protocol-Version: <version>` header — `initialize` is the single
+exception, because at that point nothing has been agreed yet. Leave the
+header off and a strict server is entitled to fall back to the older
+`2025-03-26` rules, or to refuse the request outright: the client looks
+broken and the error says nothing about why. We add the header the
+moment the handshake answers, and a test reads it back off a real
+socket for every post-handshake request.
+
+Refusing a version is also a cleanup path, not just an error path. Both
+transports hand the connection back before raising — stdio reaps its
+child process, HTTP closes its connection pool — so a server we decline
+to speak to leaves nothing behind.
+
 ## Threading model (the actual engineering)
 
 One daemon reader thread owns stdout and dispatches every line:
@@ -71,6 +86,11 @@ The transport differences that matter:
   initialize; every later request echoes it back. A process lifetime
   becomes an opaque string — which also makes sessions resumable across
   client restarts in principle (we don't persist ours; close() DELETEs).
+  `close()` is idempotent, the same promise stdio's makes: shutdown
+  paths overlap (a failed `start()` closes, then the manager closes
+  again on exit), and httpx raises `RuntimeError` — not the
+  `TransportError` you would think to catch — if you send on a client
+  that is already closed.
 * **The response body may be SSE.** `tools/call` answers often stream:
   `text/event-stream` frames parsed by the SAME `parse_events()` the
   provider adapters use. That's the whole dividend of writing framing once,
@@ -192,6 +212,14 @@ banner at startup, a real `mcp__tiny__add(19,23)` → `42` round trip,
 and — over Streamable HTTP — an SSE response stream whose embedded
 ping was answered by POST on the same connection. A second stdio run
 without `--yolo` exercised the gate path described above.
+
+Re-verified against a header-logging server afterwards, which is how
+three HTTP-side defects surfaced: `initialize` went out bare (correct)
+but so did every request after it (`MCP-Protocol-Version` missing — a
+strict server may refuse all of them); a refused version left the
+connection pool open; and a second `close()` raised `RuntimeError` from
+httpx instead of doing nothing. All three are now pinned by tests that
+read the header back off a real socket and assert the pool is closed.
 
 ## Deliberately not built
 

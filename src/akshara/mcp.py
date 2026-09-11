@@ -483,24 +483,36 @@ class MCPHttpSession:
                 "capabilities": {},
                 "clientInfo": CLIENT_INFO,
             })
+            # INSIDE the try with the request: a refused version is just
+            # as fatal as an unreachable socket, and both must hand back
+            # the connection pool rather than leak it (stdio reaps its
+            # child on the same path -- the contract is symmetric).
+            self.protocol_version = _require_supported_version(
+                result.get("protocolVersion", ""), self.config.name)
         except MCPError:
             self.close()
             raise
-        self.protocol_version = _require_supported_version(
-            result.get("protocolVersion", ""), self.config.name)
         self.server_info = result.get("serverInfo", {}) or {}
         self._notify({"jsonrpc": "2.0",
                       "method": "notifications/initialized"})
 
     def close(self) -> None:
-        """Polite DELETE of the session; servers may ignore it."""
+        """Polite DELETE of the session; servers may ignore it.
+
+        IDEMPOTENT, like MCPSession.close: shutdown paths overlap (a
+        failed start closes, then the manager closes again), and httpx
+        raises RuntimeError -- not a TransportError -- if you send on a
+        closed client, so the guard has to come before the DELETE.
+        """
+        if self._closed:
+            return
+        self._closed = True
         if self._session_id is not None:
             try:
                 self._client.delete(self.config.url, headers=self._headers())
             except httpx.TransportError:
                 pass  # best effort by definition
         self._client.close()
-        self._closed = True
 
     def healthy(self) -> bool:
         """Same contract as MCPSession.healthy: cheap, no protocol IO.
@@ -526,6 +538,13 @@ class MCPHttpSession:
                    "Content-Type": "application/json"}
         if self._session_id is not None:
             headers["Mcp-Session-Id"] = self._session_id
+        if self.protocol_version is not None:
+            # spec 2025-06-18: every request AFTER initialize MUST carry
+            # the negotiated version. Omitting it lets a server fall back
+            # to 2025-03-26 semantics -- or refuse the request outright.
+            # None until the handshake answers, which is exactly why
+            # initialize itself goes out without it.
+            headers["MCP-Protocol-Version"] = self.protocol_version
         return headers
 
     def _post(self, message: dict[str, Any],
@@ -628,7 +647,8 @@ def connect_mcp(config: MCPServerConfig, *,
 
 
 def register_mcp(registry: ToolRegistry, config: MCPServerConfig, *,
-                 timeout: float = 30.0) -> tuple[MCPSession, list[str]]:
+                 timeout: float = 30.0,
+                 ) -> tuple[MCPSession | MCPHttpSession, list[str]]:
     """Connect one server and register its (qualified-name) tools.
 
     Returns the live session -- the CALLER owns closing it.
@@ -655,7 +675,8 @@ class MCPToolWrapper(Tool):
     description: ClassVar[str] = ""
     parameters: ClassVar[dict] = {}
 
-    def __init__(self, session: MCPSession, info: MCPToolInfo) -> None:
+    def __init__(self, session: MCPSession | MCPHttpSession,
+                 info: MCPToolInfo) -> None:
         self.session = session
         self.raw_name = info.name
         self.name = f"mcp__{session.config.name}__{info.name}"
