@@ -32,6 +32,7 @@ from akshara.context import RED, estimate_history
 from akshara.errors import ImageError, RateLimitError, UserUnavailable
 from akshara.images import load_image_block
 from akshara.pricing import session_cost
+from akshara.prompt import recompose
 from akshara.types import ImageBlock
 from akshara.permissions import MODES, PermissionRequest, SwitchableGate, yolo
 from akshara.providers import get_provider
@@ -743,12 +744,10 @@ class Repl:
             self.console.print(f"[red]restore failed: {exc}[/red]")
             return
         # Checkpoints store the COMPOSED system (stale facts included), so
-        # recompose from the live EnvContext -- a restored session gets
-        # fresh context, not last Tuesday's copy
-        # ([notes/29](../notes/29-environment-awareness.md)).
-        ctx = getattr(self.agent, "env_context", None)
-        if ctx is not None:
-            ctx.reapply()
+        # rebuild it from the live prompt LAYERS -- a restored session gets
+        # fresh context and this session's skill roster, not last Tuesday's
+        # copy ([notes/29](../notes/29-environment-awareness.md)).
+        recompose(self.agent)
         self.console.print(f"[green]{summary}[/green]")
 
     def _switch_provider(self, name: str) -> None:

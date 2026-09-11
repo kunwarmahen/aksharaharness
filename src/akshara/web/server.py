@@ -58,6 +58,7 @@ from akshara.errors import ProviderError, UserUnavailable
 from akshara.images import image_block_from_bytes
 from akshara.permissions import PermissionRequest
 from akshara.pricing import session_cost
+from akshara.prompt import recompose
 from akshara.providers import get_provider
 from akshara.session import SessionStore, apply_payload
 from akshara.types import (
@@ -802,10 +803,8 @@ def make_app(session: WebSession, static_dir: Path | None = None,
         except Exception as exc:
             raise HTTPException(400, f"restore failed: {exc}") from exc
         # Same rule as the REPL's load path: checkpoints store the COMPOSED
-        # system, so recompose from the live EnvContext for fresh facts.
-        ctx = getattr(session.agent, "env_context", None)
-        if ctx is not None:
-            ctx.reapply()
+        # system, so rebuild it from the live prompt layers.
+        recompose(session.agent)
         return session.state()
 
     @app.post("/api/compact")

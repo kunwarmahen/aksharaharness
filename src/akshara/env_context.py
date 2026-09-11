@@ -27,7 +27,9 @@ Design constraints worth remembering:
   rendered once, and describe themselves as possibly-stale.
 * COMPOSITION IS ADDITIVE. The operator's own ``--system`` prompt is
   captured verbatim as the base; awareness appends below it. Nothing
-  here edits the operator's words.
+  here edits the operator's words -- and since skills append a roster
+  too, the joining lives in akshara.prompt: this module owns exactly
+  one named layer (``env``) and never touches the whole string.
 * FLIPS ARE LIVE. The loop rebuilds each request from ``agent.system``
   (agent.py passes it per iteration), so /env (REPL) and the env chip
   (web) recompose mid-session and the very next model call sees the new
@@ -50,6 +52,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from akshara.prompt import attach_prompt
 
 #: Awareness levels, low to high. Shared by config parsing, the REPL
 #: command, and the web endpoint -- one tuple, three surfaces agree.
@@ -135,6 +139,7 @@ class EnvContext:
         self._base_system: str | None = None       # the operator's --system
         self._base_captured = False                # capture exactly once
         self._agent: Any = None                    # set by attach()
+        self._prompt: Any = None                   # the agent's SystemPrompt
 
     # ---- collection ---------------------------------------------------------
 
@@ -175,9 +180,10 @@ class EnvContext:
         return "\n".join(lines)
 
     def compose(self) -> str | None:
-        """Base system prompt + awareness block; None when both are absent
-        (so an unaware session keeps sending system=None, byte-identical
-        to the pre-feature behavior)."""
+        """What awareness ALONE composes: base + block, None when both are
+        absent. This is the unattached preview -- once attach() has run,
+        the agent's layered SystemPrompt is the authority (it also carries
+        the skill roster, which this cannot see). PURE, like render_block."""
         parts = [p for p in (self._base_system, self.render_block()) if p]
         return "\n\n".join(parts) or None
 
@@ -189,20 +195,28 @@ class EnvContext:
 
         The base is captured EXACTLY ONCE -- checkpoints save the composed
         string, so re-attaching to a loaded agent would swallow the old
-        block into the base and stack stale copies (loads call reapply)."""
+        block into the base and stack stale copies (loads call reapply).
+        That discipline now lives in attach_prompt, which hands back the
+        SAME SystemPrompt however many times it is called; we only mirror
+        its base layer so compose() keeps working unattached."""
+        self._prompt = attach_prompt(agent)
         if not self._base_captured:
-            self._base_system = agent.system
+            self._base_system = self._prompt.get("base")
             self._base_captured = True
         self._agent = agent
         agent.env_context = self
         self.reapply()
 
     def reapply(self) -> None:
-        """Recompose from the stored base -- after /load restored a stale
-        composed string over ours, or internally after flip()."""
+        """Write the fact sheet into the ``env`` layer and recompose --
+        after /load restored a stale composed string over ours, or
+        internally after flip(). Nothing here touches the other layers:
+        the operator's base and the skill roster recompose untouched."""
         self.ensure_facts()
-        if self._agent is not None:
-            self._agent.system = self.compose()
+        if self._prompt is None:
+            return
+        self._prompt.set("env", self.render_block())
+        self._prompt.apply()
 
     def flip(self, mode: str) -> str:
         """Switch level, collecting anything the new level still needs
