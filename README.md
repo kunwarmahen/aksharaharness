@@ -310,7 +310,11 @@ python examples/tiny_mcp_server.py --http     # the same server over Streamable 
 Over HTTP every request after the handshake carries the negotiated
 `MCP-Protocol-Version` header (spec 2025-06-18) — strict remote servers
 reject clients that omit it — and a refused version hands the connection
-straight back instead of leaking it.
+straight back instead of leaking it. **No authorization**, though: the
+spec's OAuth 2.1 flow is not built and there is no field to carry a
+token, so commercial endpoints answer `401 authentication required` at
+`initialize` and stop there. Local and unauthenticated servers are the
+supported ground ([notes/09](notes/09-mcp.md#deliberately-not-built)).
 
 Servers are runtime furniture, not just startup wiring: `/mcp` lists
 them, `/mcp add NAME URL` (or `NAME COMMAND [ARGS...]`) connects one
@@ -319,7 +323,12 @@ future launches — and `/mcp off|on NAME` / `/mcp remove NAME` toggle or
 tear down. The web panel's "servers & tools" section does the same:
 health dots, add-by-form or paste-JSON, per-server switches, remove.
 Disabling keeps the process warm; removing kills it and forgets any
-saved entry ([notes/09](notes/09-mcp.md)).
+saved entry. Paste-JSON takes the same `{"servers": {...}}` object as
+the config file above — several servers in one go, each reporting its
+own success or failure — through the same parser, so the two can't
+drift. For a click-by-click first run (one terminal, a local model, and
+the three traps that bite everyone once) see
+[notes/09 · trying it in the portal](notes/09-mcp.md#trying-it-in-the-portal-end-to-end).
 
 Sub-agents (agent-as-tool: fresh-context children with a filtered tool
 catalog, per-session spawn budget, compact results — child streams tee

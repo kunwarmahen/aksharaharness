@@ -117,7 +117,11 @@ blob in the same shape as `--mcp-config`
 result inside `results[]` — one bad server is an `ok:false` row, not a
 500 hiding the three that worked. A checked-by-default "remember"
 saves the entry to `.akshara/mcp.json` for auto-reconnect on future
-launches; remove always forgets it ([09-mcp.md](09-mcp.md)).
+launches; remove always forgets it. A click-by-click walkthrough of
+that panel -- adding a server both ways, watching a local model call
+it, and the three traps (cwd-relative paths, remember-by-default, the
+stdio radio) -- lives in
+[09-mcp.md](09-mcp.md#trying-it-in-the-portal-end-to-end).
 
 All of these broadcast a fresh `state` so other open tabs follow
 along. The top-bar mode chip shows the permission mode — red while

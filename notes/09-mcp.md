@@ -192,6 +192,123 @@ The decisions worth writing down:
   hand-written config is worse than a refused launch; `load_remembered`
   raises rather than shrugging.
 
+## Trying it in the portal, end to end
+
+The panel is the easiest way to see MCP work without editing a config
+file first. One terminal is enough -- for a stdio server the portal
+spawns the child itself, so there is nothing to start beforehand.
+
+```bash
+cd <this repo>                      # the cwd matters; see the traps below
+uv run akshara --web --provider ollama
+```
+
+Open `http://localhost:8321` and click the **⚙ chip** in the top bar
+(it shows the live tool count). That opens **servers, skills & tools**,
+with the **mcp servers** section first. Click **＋ add**:
+
+* **name** `tiny` -- the tools will register as `mcp__tiny__…`
+* **transport** leave *runs a command* selected (stdio is the default)
+* **command** `python examples/tiny_mcp_server.py` -- one line,
+  split into command + args the way a shell would
+* untick **remember** for a throwaway (it is ticked by default)
+
+**connect** adds a row: a green dot, a `stdio` badge, `2 tool(s)`, and
+the ⚙ count climbs by two. Now ask for it in the chat box:
+
+> Use the mcp__tiny__add tool to add 19 and 23. Report only the number.
+
+A tool card appears in the transcript -- `mcp__tiny__add`,
+`{"a": 19, "b": 23}`, output `42`. On `qwen3.8` the whole round trip
+runs locally; no cloud key is involved at any point.
+
+The row's **switch** is `/mcp off`: flip it and the row reads
+`2 tool(s), 2 off`, the toast warns that its calls now fail as data,
+and the child process stays warm. The **✕** is `/mcp remove`, and it
+arms before it fires -- the button becomes *sure?* for 2.5 seconds
+rather than opening a native dialog.
+
+### What "paste json" is
+
+The second tab of the add form takes the SAME `{"servers": {...}}`
+object a `--mcp-config` file holds, as text instead of a path:
+
+```json
+{"servers": {"tiny":   {"command": "python",
+                        "args": ["examples/tiny_mcp_server.py"]},
+             "remote": {"url": "http://127.0.0.1:9731/mcp"}}}
+```
+
+`parse_mcp_text` hands that string to the same
+`_configs_from_servers_dict` the file loader uses, so the two can never
+drift: anything a config file accepts, the box accepts, and the error
+messages are the ones the loader already writes. Three things it buys
+over the fields form, which does one server at a time:
+
+* **several servers in one paste** -- the example above connects both
+  transports at once;
+* **per-server results**, so one bad entry does not hide the good ones:
+  the response is a list of `{name, ok, tools}` / `{name, ok, error}`;
+* **a config someone handed you** goes straight in -- no file, no
+  restart, no flag.
+
+The **remember** tick applies to every server in the blob. Bad JSON is
+refused before anything spawns, with the parser's own complaint
+(`pasted config is not valid JSON: …`) shown under the box.
+
+### Three traps, all of them real
+
+* **Relative paths resolve against the portal's working directory**,
+  not this repo. Started from the repo root, `examples/tiny_mcp_server.py`
+  is right; started anywhere else it surfaces as
+  `exited unexpectedly (code 2) during 'initialize'` -- which does not
+  obviously mean "wrong path". Absolute paths always work.
+* **remember is ticked by default.** Leave it on for a test server and
+  it lands in `.akshara/mcp.json` and reconnects on every future
+  launch; the row grows a **saved** badge when that has happened.
+  Removing forgets it again.
+* **The transport radio defaults to stdio.** For a Streamable-HTTP
+  server (`python examples/tiny_mcp_server.py --http 9731`, second
+  terminal) pick *talks to a url* and give it
+  `http://127.0.0.1:9731/mcp`, or the form will try to run your URL as
+  a command.
+
+### Remote servers that want a login will not connect
+
+Public example servers speak to anyone. Commercial ones generally do
+not, and the failure is immediate and total:
+
+```
+'vendor' rejected 'initialize': HTTP 401 'authentication required'
+```
+
+That is not a misconfigured URL. The server answered with the MCP
+spec's authorization challenge:
+
+```
+www-authenticate: Bearer resource_metadata="https://…/.well-known/oauth-protected-resource/…"
+```
+
+which is an invitation to run the OAuth 2.1 flow the 2025-06-18 spec
+defines for HTTP transports: fetch that metadata document, discover the
+authorization server, register (often dynamically, RFC 7591), send the
+user through an authorization-code + PKCE round trip in a browser,
+exchange the code for an access token, then put
+`Authorization: Bearer …` on every subsequent request. This client
+implements none of it -- `MCPServerConfig` carries `command`, `args`,
+`env` and `url`, and `_headers()` sets only `Accept`, `Content-Type`,
+`Mcp-Session-Id` and `MCP-Protocol-Version`. There is no field a
+credential could travel in, so a 401 here means "not built", not "you
+typed it wrong". Servers that authenticate with a plain bearer token
+are a much smaller lift than the full flow (the metadata above says
+`"bearer_methods_supported": ["header"]`); the full browser dance is
+the part that is genuinely a project.
+
+Every panel action is a plain endpoint underneath -- `/api/mcp`,
+`/api/mcp/add`, `/api/mcp/toggle`, `/api/mcp/remove` -- so the same
+walkthrough runs from `curl` when you would rather not click
+([22-web-ui.md](22-web-ui.md)).
+
 ## Security: an integration standard, not a security boundary
 
 The chapter's loudest lesson, and the reason our structural choices
@@ -229,6 +346,15 @@ httpx instead of doing nothing. All three are now pinned by tests that
 read the header back off a real socket and assert the pool is closed.
 
 ## Deliberately not built
+
+**Authorization.** The spec's OAuth 2.1 flow for HTTP transports --
+protected-resource metadata discovery, dynamic client registration,
+authorization-code + PKCE, token refresh -- is absent, and so is any
+plainer way to attach a credential: no header field on
+`MCPServerConfig`, nothing in the panel's form. Local and unauthenticated
+servers work; anything commercial answers `401` at `initialize` and
+stops there. This is the gap most likely to meet a reader who tries a
+real-world endpoint, so it leads this list rather than hiding in it.
 
 Standalone GET stream and RPC batching (see above); resources, prompts,
 and sampling capabilities (tools are the 90% case);
