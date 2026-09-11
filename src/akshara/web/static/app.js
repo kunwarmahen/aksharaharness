@@ -802,7 +802,10 @@ function skillRow(s) {
     } catch { box.checked = !box.checked; }
     finally { box.disabled = false; }
   };
-  sw.append(box);
+  // The input is opacity:0 -- .knob IS the visible switch (style.css).
+  const knob = document.createElement("span");
+  knob.className = "knob";
+  sw.append(box, knob);
   row.append(sw);
 
   return row;
