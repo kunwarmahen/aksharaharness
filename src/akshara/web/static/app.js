@@ -702,22 +702,85 @@ async function openToolsPanel() {
   const rows = $("#tools-rows");
   rows.textContent = "loading…";
 
-  let servers = null, tools = null;
+  let servers = null, tools = null, skills = null;
   try {
-    const [mcpRes, toolRes] = await Promise.all([
-      fetch("/api/mcp"), fetch("/api/tools")]);
+    const [mcpRes, toolRes, skillRes] = await Promise.all([
+      fetch("/api/mcp"), fetch("/api/tools"), fetch("/api/skills")]);
     // A session without an mcp manager answers 400 -- hide the section.
     servers = mcpRes.ok ? (await mcpRes.json()).servers : null;
     tools = toolRes.ok ? await toolRes.json() : null;
-  } catch { /* both stay null -> per-section error text */ }
+    // Same rule for skills: --no-skills answers 400 -> section hidden.
+    skills = skillRes.ok ? await skillRes.json() : null;
+  } catch { /* all stay null -> per-section error text */ }
 
   $("#mcp-section").classList.toggle("hidden", servers === null);
   collapseAddForm();
   renderMCPRows(servers);
+  $("#skills-section").classList.toggle("hidden", skills === null);
+  renderSkillRows(skills);
 
   if (!tools) { rows.textContent = "could not load tools"; return; }
   rows.textContent = "";
   for (const t of tools) rows.append(toolRow(t));
+}
+
+/* ---- skills ---- */
+
+$("#skills-reload").onclick = async () => {
+  const btn = $("#skills-reload");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/skills/reload", { method: "POST" });
+    if (!res.ok) return;                       // mid-turn: 409, just no-op
+    const skills = await (await fetch("/api/skills")).json();
+    renderSkillRows(skills);
+  } catch { /* leave the rows as they were */ }
+  finally { btn.disabled = false; }
+};
+
+function renderSkillRows(skills) {
+  const rows = $("#skills-rows");
+  if (!skills) { rows.textContent = ""; return; }
+  rows.textContent = "";
+  if (!skills.skills.length && !skills.broken.length) {
+    rows.innerHTML = '<div class="mcp-empty">no skills yet — add a '
+      + 'skills/&lt;name&gt;/SKILL.md to this project</div>';
+    return;
+  }
+  for (const s of skills.skills) rows.append(skillRow(s));
+  for (const b of skills.broken) {
+    const row = document.createElement("div");
+    row.className = "mcp-row off";
+    row.innerHTML = `<span class="dot dead"></span>`
+      + `<div><span class="t-name">${esc(b.path)}</span></div>`
+      + `<div class="t-desc">${esc(b.reason)}</div>`;
+    rows.append(row);
+  }
+}
+
+function skillRow(s) {
+  const row = document.createElement("div");
+  row.className = "mcp-row";
+
+  const dot = document.createElement("span");
+  // A filled dot means the model actually pulled it this session -- the
+  // first question every skill author has.
+  dot.className = "dot" + (s.loaded ? "" : " dead");
+  dot.title = s.loaded ? "loaded this session" : "not loaded yet";
+  row.append(dot);
+
+  const name = document.createElement("div");
+  name.innerHTML = `<span class="t-name">${esc(s.name)}</span>`
+    + `<span class="t-badge">${esc(s.source)}</span>`;
+  name.title = s.path;
+  row.append(name);
+
+  const desc = document.createElement("div");
+  desc.className = "t-desc";
+  desc.textContent = s.description;
+  row.append(desc);
+
+  return row;
 }
 
 /* ---- mcp servers ---- */

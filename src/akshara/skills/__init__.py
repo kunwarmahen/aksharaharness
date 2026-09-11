@@ -6,6 +6,12 @@ Discovery and the on-disk format live in ``loader``; see
 
 from __future__ import annotations
 
+from akshara.skills.registry import (
+    ROSTER_LIMIT,
+    SkillRegistry,
+    enable_skills,
+)
+from akshara.skills.tools import ListSkills, LoadSkill
 from akshara.skills.loader import (
     MIN_DESCRIPTION,
     SKILL_FILE,
@@ -21,6 +27,11 @@ from akshara.skills.loader import (
 
 __all__ = [
     "BrokenSkill",
+    "enable_skills",
+    "ListSkills",
+    "LoadSkill",
+    "ROSTER_LIMIT",
+    "SkillRegistry",
     "discover",
     "load_skill",
     "MIN_DESCRIPTION",

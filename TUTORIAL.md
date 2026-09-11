@@ -875,6 +875,36 @@ Not comfortable sending your city along with every request? `/env local`
 keeps the machine facts and drops the location, `/env off` goes back to
 asking-you-everything ([notes/29](notes/29-environment-awareness.md)).
 
+And one that pays off every day after the first: **you can teach it
+your procedures**. Make a folder called `skills/`, put a folder inside
+it named after the job, and write a `SKILL.md`:
+
+```
+skills/release/SKILL.md
+```
+
+```markdown
+---
+name: release
+description: Cut a release of this project. Use when asked to cut, tag,
+  or publish a release.
+---
+
+# Cutting a release
+1. Check the working tree is clean: `git status --porcelain`
+2. Bump the version in pyproject.toml
+3. Tag it: `git tag -a v$VERSION -m "release $VERSION"`
+```
+
+That is the whole setup — no registration, no restart. From then on the
+agent knows a skill called `release` exists and roughly what it covers
+(one line, in its prompt), and when you ask it to cut a release it
+fetches the full instructions for itself and follows them. Ask about
+something else and it never pays for them. `/skills` lists what you've
+written, `/skills release` shows you one, and `/release 0.2.0` runs one
+on the spot. This is how you stop re-explaining the same five steps
+every week ([notes/30](notes/30-skills.md)).
+
 One more superpower lives in the full harness: **plugging in new hands
 while it runs**. MCP is a standard plug for other people's tools — say
 a GitHub server or a database server — and the full harness can attach
@@ -933,6 +963,7 @@ Each topic has a short, plain-written note with the war stories:
 | Tools that make it self-reliant: glob, todos, web fetch, background jobs, seeing pictures | [notes/23](notes/23-glob.md) · [notes/24](notes/24-todo-lists.md) · [notes/25](notes/25-web-fetch.md) · [notes/26](notes/26-background-bash.md) · [notes/27](notes/27-read-image.md) |
 | Operating web apps (JS-rendered pages) on a headless browser: browser_open/click/fill/close — and staying logged in, if you sign in once yourself | [notes/28](notes/28-browser-tools.md) |
 | Session awareness: it knows the date, your timezone, your city — so it stops asking what it could find out | [notes/29](notes/29-environment-awareness.md) |
+| Teaching it your own procedures once, in a file, instead of re-explaining them every week (skills) | [notes/30](notes/30-skills.md) |
 | Too many tools? Per-turn selection, the always-loaded core, and switching tools off mid-conversation | [notes/17](notes/17-tool-selection.md) |
 
 And the best exercise known to man: point your finished `agent.py` at

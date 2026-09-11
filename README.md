@@ -54,6 +54,8 @@ uv run akshara --yolo                                 # no permission prompts (c
 uv run akshara --cache                                # prompt-cache breakpoints on
 uv run akshara --resume                               # restore the newest checkpoint
 uv run akshara --env-context local                    # machine facts only (default: full)
+uv run akshara --skills-dir ~/shared-skills           # extra skills root (repeatable)
+uv run akshara --no-skills                            # ignore skills entirely
 uv run akshara "summarize README.md"                  # one-shot prompt, then exit
 uv run akshara --image photo.png "what's in this picture?"   # vision one-shot
 ```
@@ -80,6 +82,68 @@ Three levels (`AKSHARA_ENV_CONTEXT` / `--env-context` set the start,
 
 One honest tradeoff on `full`: your city rides inside every request sent
 to your LLM provider. If you'd rather share nothing, `local` or `off`.
+
+### It can learn your procedures (skills)
+
+Some knowledge is yours, not the model's: how *this* repo reviews a PR,
+the three files everyone forgets when adding a feature, the release
+steps in the order that actually works. Write it down once, in a folder,
+and the agent picks it up **only when the work calls for it**:
+
+```
+skills/new-tool/
+├── SKILL.md        instructions, with a short header saying what it's for
+└── template.py     referenced by the instructions, read only if needed
+```
+
+```markdown
+---
+name: new-tool
+description: Add a new built-in tool to this harness -- schema, summary,
+  run, registration, permission gating, tests and docs. Use when asked to
+  add, write, or wire up a tool that the model can call.
+---
+
+# Adding a tool to AksharaHarness
+1. Read the neighbours first. `src/akshara/tools/glob.py` is the...
+```
+
+Nothing else to wire up — drop the folder in and start a session. Only
+the name and description ride in the prompt (~25 tokens each); the
+instructions arrive as a tool result when the model calls `load_skill`,
+and bundled files only if the instructions send it there. Ten skills
+cost you a rounding error per turn and the right one shows up in full,
+on demand.
+
+It works on local models too — here is `qwen3.8-64k` through Ollama,
+with a prompt that never says the word *skill*:
+
+```
+$ uv run akshara --provider ollama --prompt "What would I have to change
+    to add a count_lines tool to this project? Just the checklist."
+
+skills: 2 loaded -- new-tool, notes-entry
+→ load_skill()
+  3. Register it — add to default_registry(), extend __all__, and bump
+     the docstring count ("Sixteen built-ins…") in tools/__init__.py.
+```
+
+That last detail is in nobody's training data. It is in `SKILL.md`,
+because someone got bitten by it once and wrote it down.
+
+| where | for |
+|---|---|
+| `skills/` | the set your repo commits |
+| `.akshara/skills/` | private overrides (gitignored) |
+| `~/.akshara/skills/` | yours, on every project |
+| `--skills-dir` / `$AKSHARA_SKILLS_PATH` | explicit, wins over all of them |
+
+In the REPL: `/skills` lists them (with what broke and what got loaded),
+`/skills NAME` prints one without spending a turn, `/skills reload`
+re-scans after an edit, and `/new-tool add a count_lines tool` runs one
+directly. The web UI gets a skills section in the tools panel. Full
+design notes, including why the roster is frozen and what `allowed-tools`
+does *not* do: [notes/30](notes/30-skills.md).
 
 ### One-command starts
 
@@ -447,6 +511,15 @@ src/akshara/
 ├── leases.py       TTL leases for shared resources -- parallel batch writes
 │                   to one path serialize instead of racing
 ├── session.py      SQLite checkpoints: append-only versions, /save /load --resume
+├── prompt.py       the system prompt as ORDERED LAYERS (base / env / skills):
+│                   each owner writes one named layer, attach_prompt captures
+│                   the operator's --system exactly once, recompose() rebuilds
+│                   after a /load restores a stale composed string
+├── skills/         procedural knowledge on disk: a folder + SKILL.md (flat
+│                   frontmatter, hand-parsed). Three cost tiers -- description
+│                   in the prompt every turn, body via the load_skill tool,
+│                   bundled files via read_file; roster frozen at session start
+│                   so --cache's prefix survives ([notes/30](notes/30-skills.md))
 ├── mcp.py          MCP client, hand-rolled JSON-RPC over stdio AND
 │                   Streamable HTTP (SSE responses via providers/sse.py):
 │                   handshake, tools/list, tools/call; MCPManager adds/

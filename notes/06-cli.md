@@ -276,6 +276,38 @@ request. And `/load` re-composes after restoring a checkpoint, because
 checkpoints store the *composed* string — old sessions must not
 resurrect yesterday's stale facts as today's truth.
 
+## /skills — procedures you wrote, on demand
+
+A skill is a folder with a `SKILL.md`: instructions the agent loads only
+when the work calls for it ([30-skills.md](30-skills.md)). The terminal
+face is four commands, and the last one is the one people actually use:
+
+```
+/skills                     # what is on disk: source, loaded-this-session, broken
+/skills NAME                # print one — reading your own file costs no model turn
+/skills reload              # re-scan after writing or editing one
+/NAME <task>                # run a skill directly: /new-tool add a count_lines tool
+```
+
+Three details worth the ink:
+
+**The shorthand lives in the fallback arm.** `/NAME` is resolved in
+`case _:` — *after* every built-in has had its chance at the name — so a
+skill called `clear` can never shadow `/clear`. The cost is that a typo'd
+built-in gets checked against the skill set before it reports "unknown
+command", which is a fine price for never breaking a command someone has
+muscle memory for.
+
+**Output is printed `markup=False`.** A `SKILL.md` is arbitrary Markdown
+written by a human, and rich would happily interpret `[dim]` in it as
+styling — or crash on an unclosed bracket. Same rule as `/env`'s panel
+(hostnames and paths are user data too).
+
+**`/NAME` prepends the body to your words rather than doing anything
+clever.** The model gets one message saying what to do and what to do it
+to, and `/history` shows exactly what was sent. No hidden injection, no
+second round trip to fetch instructions the harness already had on disk.
+
 ## One command to start it: `start.sh`
 
 The CLI grew more flags than a newcomer wants to memorize on day one,

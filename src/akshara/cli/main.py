@@ -34,6 +34,8 @@ from akshara.permissions import SwitchableGate, trust_sandbox, yolo
 from akshara.providers import get_provider
 from akshara.sandbox import autodetect
 from akshara.session import SessionStore, apply_payload
+from akshara.skills import enable_skills
+from akshara.skills.loader import ENV_PATH
 from akshara.subagent import SpawnSubagent, SubagentSpawner
 from akshara.tools import default_registry
 from akshara.tools.ask_user import AskUser, TerminalChannel
@@ -148,9 +150,28 @@ def build_parser() -> argparse.ArgumentParser:
                              "lookup to ipinfo.io) into the system prompt, "
                              "plus a try-tools-before-asking policy line. "
                              "Default from $AKSHARA_ENV_CONTEXT (full)")
+    parser.add_argument("--skills-dir", action="append", default=[],
+                        metavar="DIR", dest="skills_dir",
+                        help="extra directory to load skills from (repeatable). "
+                             "Searched BEFORE the implicit roots "
+                             "(.akshara/skills, skills/, ~/.akshara/skills). "
+                             "Same as $AKSHARA_SKILLS_PATH")
+    parser.add_argument("--no-skills", action="store_true", dest="no_skills",
+                        help="do not load skills at all: no roster in the "
+                             "system prompt, no load_skill tool")
     parser.add_argument("prompt_positional", nargs="?", metavar="PROMPT",
                         help="same as --prompt (akshara \"what is in README.md?\")")
     return parser
+
+
+def _prepend_skill_path(dirs: list[str]) -> None:
+    """--skills-dir entries win over $AKSHARA_SKILLS_PATH and every implicit
+    root: a flag is the most explicit thing the operator can say."""
+    existing = os.environ.get(ENV_PATH, "")
+    entries = [str(Path(d).expanduser()) for d in dirs]
+    if existing:
+        entries.append(existing)
+    os.environ[ENV_PATH] = os.pathsep.join(entries)
 
 
 def enable_subagents(agent: Agent, console: Console) -> SubagentSpawner:
@@ -384,6 +405,21 @@ def main(argv: list[str] | None = None) -> int:
         agent.registry.register(AskUser(TerminalChannel()))
     else:
         agent.registry.register(AskUser(None))
+
+    # Skills ([notes/30](../notes/30-skills.md)): discover, compose the
+    # roster onto its own prompt layer, register load_skill. Before the
+    # MCP block on purpose -- the tool catalog is built after it, and a
+    # pinned tool that does not exist yet cannot be pinned.
+    if not args.no_skills:
+        if args.skills_dir:
+            _prepend_skill_path(args.skills_dir)
+        skills = enable_skills(agent, Path(args.cwd))
+        if len(skills):
+            console.print(f"[dim]skills: {len(skills)} loaded -- "
+                          f"{', '.join(skills.names())}[/dim]")
+        for broken in skills.found.broken:
+            console.print(f"[yellow]skill {broken.path}: {broken.reason}"
+                          f"[/yellow]")
 
     store = SessionStore(Path(args.cwd) / ".akshara" / "session.sqlite3")
     # The manager owns live MCP connections so servers can be added,

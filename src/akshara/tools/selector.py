@@ -56,8 +56,14 @@ AUTO_SELECTION_THRESHOLD = 20
 #: they load every turn regardless of score (book ch12: "pin the few
 #: that must always be there"). The LONG TAIL -- MCP tools, browser,
 #: background jobs -- stays retrievable; that is what selection is for.
+#: ``load_skill`` joins them for the same reason from the other side: the
+#: roster in the system prompt PROMISES the model it can load any skill
+#: named there, and a promise BM25 can drop is a promise broken on
+#: exactly the vague opening turns skills are written for. (Pins absent
+#: from the registry are skipped, so this costs nothing when a project
+#: has no skills -- see enable_selection.)
 CORE_PINS = ("read_file", "write_file", "edit_file",
-             "bash", "glob", "grep")
+             "bash", "glob", "grep", "load_skill")
 
 #: Width used when selection auto-enables past AUTO_SELECTION_THRESHOLD.
 #: Arithmetic: len(CORE_PINS) pins + the discovery hatch leaves ~5 slots

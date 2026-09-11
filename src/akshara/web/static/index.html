@@ -62,7 +62,7 @@
 <div id="tools-backdrop" class="hidden">
   <div id="tools-panel" role="dialog" aria-modal="true">
     <div class="tools-head">
-      <h3>servers &amp; tools</h3>
+      <h3>servers, skills &amp; tools</h3>
       <span class="tools-note">off = never sent to the model, its calls fail as data — applies immediately, even mid-run</span>
       <button class="m-btn" id="tools-close">close</button>
     </div>
@@ -100,6 +100,14 @@
           <button class="m-btn" id="mcp-cancel-add">cancel</button>
         </div>
       </div>
+    </div>
+    <div id="skills-section">
+      <div class="mcp-head">
+        <h4>skills</h4>
+        <span class="tools-note">instructions you wrote; the model loads one only when the task matches</span>
+        <button class="m-btn" id="skills-reload" title="re-scan after editing a SKILL.md">rescan</button>
+      </div>
+      <div id="skills-rows"></div>
     </div>
     <div class="tools-subhead">tools</div>
     <div id="tools-rows"></div>

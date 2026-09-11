@@ -260,6 +260,35 @@ menu answer adds `--auto-approve` (`AKSHARA_AUTO_APPROVE`); `--model`,
 `--port` already busy is refused — it tells you the port, it doesn't
 take it.
 
+## The skills section
+
+The tools panel grew a third section (servers → skills → tools), fed by
+three endpoints that mirror the REPL's commands exactly: `GET
+/api/skills` for the set, `GET /api/skills/{name}` for one body, `POST
+/api/skills/reload` to re-scan.
+
+Two decisions worth recording:
+
+**Reload takes `require_idle()`; the tool toggles deliberately do not.**
+Switching a tool off mid-turn is the *point* — the loop re-consults the
+registry per call, so a runaway chain can be cut without waiting it out.
+The skills roster is different: it is a system-prompt layer, and
+rewriting the prompt under a running turn changes the request in flight.
+So the one that edits the prompt waits, and the one that edits the
+registry does not.
+
+**Reading a skill in the panel does not mark it loaded.** Each row shows
+a filled dot when the model actually pulled that skill this session —
+the first question every skill author asks is "did it even fire?", and a
+dot that also lit up when a *human* clicked to read the file would be
+answering a different question. So `GET /api/skills/{name}` reads
+straight off the registry's discovered copy and never touches the load
+record; only `load_skill` does.
+
+A session started with `--no-skills` answers 400 on all three, and the
+panel hides the section — the same shape the MCP section already uses
+when no manager is wired.
+
 ## What the tests pin
 
 52 new offline tests, no network, no key:

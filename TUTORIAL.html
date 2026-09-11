@@ -2186,6 +2186,41 @@ def approved(name: str, args: dict) -> bool:
             keeps the machine facts and drops the location;
             <code>/env off</code> goes back to asking-you-everything.
           </p>
+          <p>
+            And one that pays off every day after the first: <b>you can
+            teach it your procedures</b>. Make a folder called
+            <code>skills/</code>, put a folder inside it named after the
+            job, and write a <code>SKILL.md</code>:
+          </p>
+        </div>
+        <div class="codewrap">
+          <div class="codecap">
+            <span class="fname">skills/release/SKILL.md</span><span>once</span>
+          </div>
+          <pre><code data-src>---
+name: release
+description: Cut a release of this project. Use when asked to cut, tag,
+  or publish a release.
+---
+
+# Cutting a release
+1. Check the working tree is clean: `git status --porcelain`
+2. Bump the version in pyproject.toml
+3. Tag it: `git tag -a v$VERSION -m "release $VERSION"`</code></pre>
+        </div>
+        <div class="prose">
+          <p>
+            That is the whole setup — no registration, no restart. From
+            then on the agent knows a skill called <code>release</code>
+            exists and roughly what it covers (one line, in its prompt),
+            and when you ask it to cut a release it fetches the full
+            instructions for itself and follows them. Ask about something
+            else and it never pays for them. <code>/skills</code> lists
+            what you've written, <code>/skills release</code> shows you
+            one, and <code>/release 0.2.0</code> runs one on the spot.
+            This is how you stop re-explaining the same five steps every
+            week (<span class="cite">notes/30-skills.md</span>).
+          </p>
           <p>What you built maps almost one-to-one onto the big tools:</p>
         </div>
         <div class="tblwrap">
@@ -2388,6 +2423,13 @@ def approved(name: str, args: dict) -> bool:
                     >notes/29-environment-awareness.md</span
                   >
                 </td>
+              </tr>
+              <tr>
+                <td>
+                  Teaching it your own procedures once, in a file, instead
+                  of re-explaining them every week (skills)
+                </td>
+                <td><span class="cite">notes/30-skills.md</span></td>
               </tr>
             </tbody>
           </table>

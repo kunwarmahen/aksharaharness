@@ -17,7 +17,9 @@ from akshara.agent import Agent
 from akshara.cli.repl import Repl, confirm_gate
 from akshara.env_context import EnvContext
 from akshara.permissions import PermissionRequest, SwitchableGate, allow_read_only
-from akshara.types import ImageBlock, StartEvent, TextBlock, TextDelta
+from akshara.skills import enable_skills
+from akshara.types import (ImageBlock, Message, StartEvent, TextBlock,
+                           TextDelta)
 
 
 def make_repl(lines: list[str]) -> tuple[Repl, list[str]]:
@@ -627,3 +629,121 @@ class TestMcpCommand:
         repl, console, _ = self._repl(connector=failing)
         repl._command("/mcp add dead python x.py")
         assert "could not connect 'dead'" in console.file.getvalue()
+
+
+class TestSkillsCommand:
+    """/skills is the terminal twin of the web panel: what is on disk,
+    what broke, what the model actually pulled. Reading your own file
+    must never cost a model turn, so nothing here calls the provider."""
+
+    SKILL = """\
+---
+name: pr-review
+description: Review a git diff for correctness bugs and missing tests.
+  Use when asked to review a PR or the working tree.
+---
+
+# PR review
+
+1. Get the diff.
+"""
+
+    @staticmethod
+    def make_skills_repl(tmp_path, *, skills: bool = True):
+        agent = Agent(ScriptedProvider([]), model="m",
+                      permissions=allow_read_only, cwd=tmp_path)
+        console = Console(file=io.StringIO(), width=200)
+        repl = Repl(agent, console, input_fn=lambda prompt: "")
+        if skills:
+            enable_skills(agent, tmp_path, home=tmp_path / "home")
+        return repl, console, agent
+
+    def write(self, tmp_path, name="pr-review", text=None):
+        folder = tmp_path / "skills" / name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "SKILL.md").write_text(text or self.SKILL)
+
+    def test_bare_command_lists_what_is_on_disk(self, tmp_path):
+        self.write(tmp_path)
+        repl, console, _ = self.make_skills_repl(tmp_path)
+        assert repl._command("/skills") is False
+        out = console.file.getvalue()
+        assert "1 skill(s):" in out
+        assert "pr-review [project]" in out
+
+    def test_empty_project_is_told_where_skills_go(self, tmp_path):
+        repl, console, _ = self.make_skills_repl(tmp_path)
+        repl._command("/skills")
+        assert "no skills found" in console.file.getvalue()
+        assert "skills" in console.file.getvalue()
+
+    def test_broken_skills_are_explained_not_hidden(self, tmp_path):
+        self.write(tmp_path, "broken", "not a skill\n")
+        repl, console, _ = self.make_skills_repl(tmp_path)
+        repl._command("/skills")
+        assert "missing frontmatter" in console.file.getvalue()
+
+    def test_named_skill_prints_its_instructions_locally(self, tmp_path):
+        self.write(tmp_path)
+        repl, console, agent = self.make_skills_repl(tmp_path)
+        repl._command("/skills pr-review")
+        assert "# PR review" in console.file.getvalue()
+        # reading it yourself is not the model loading it
+        assert agent.skills.loaded == []
+
+    def test_unknown_name_suggests_the_near_miss(self, tmp_path):
+        self.write(tmp_path)
+        repl, console, _ = self.make_skills_repl(tmp_path)
+        repl._command("/skills pr-reviw")
+        assert "did you mean pr-review" in console.file.getvalue()
+
+    def test_reload_picks_up_a_skill_written_mid_session(self, tmp_path):
+        repl, console, agent = self.make_skills_repl(tmp_path)
+        self.write(tmp_path)
+        repl._command("/skills reload")
+        assert "1 skill(s)" in console.file.getvalue()
+        assert "- pr-review:" in agent.system
+
+    def test_missing_registry_reports_instead_of_crashing(self, tmp_path):
+        repl, console, _ = self.make_skills_repl(tmp_path, skills=False)
+        repl._command("/skills")
+        assert "skills are off" in console.file.getvalue()
+
+
+class TestSkillShorthand:
+    """``/pr-review the auth branch`` runs a normal turn with the skill's
+    instructions already in the message -- no extra round trip to fetch
+    them, and the transcript shows exactly what was sent."""
+
+    @staticmethod
+    def make_repl_with_skill(tmp_path, script):
+        agent = Agent(ScriptedProvider(script), model="m",
+                      permissions=allow_read_only, cwd=tmp_path)
+        console = Console(file=io.StringIO(), width=200)
+        repl = Repl(agent, console, input_fn=lambda prompt: "")
+        folder = tmp_path / "skills" / "pr-review"
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text(TestSkillsCommand.SKILL)
+        enable_skills(agent, tmp_path, home=tmp_path / "home")
+        return repl, console, agent
+
+    def test_a_skill_name_runs_a_turn_with_its_body(self, tmp_path):
+        repl, _, agent = self.make_repl_with_skill(
+            tmp_path, [assistant_text("reviewed")])
+        assert repl._command("/pr-review the auth branch") is False
+        sent = agent.history[0].content[0].text
+        assert "# PR review" in sent
+        assert "Task: the auth branch" in sent
+        assert agent.skills.loaded == ["pr-review"]
+
+    def test_built_ins_keep_their_name(self, tmp_path):
+        # a skill called 'clear' must not shadow /clear
+        repl, _, agent = self.make_repl_with_skill(tmp_path, [])
+        agent.history.append(Message("user", [TextBlock("x")]))
+        repl._command("/clear")
+        assert agent.history == []
+
+    def test_an_unknown_name_still_reports_unknown_command(self, tmp_path):
+        repl, console, _ = self.make_repl_with_skill(tmp_path, [])
+        repl._command("/not-a-skill")
+        assert "unknown command" in console.file.getvalue()

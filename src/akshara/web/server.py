@@ -393,6 +393,10 @@ class WebSession:
             # built the agent without an EnvContext.
             "env_context": (agent.env_context.describe()
                             if hasattr(agent, "env_context") else None),
+            # Skills snapshot ([notes/30]); None when the host built the
+            # agent without a SkillRegistry (--no-skills, embedders).
+            "skills": (agent.skills.describe()
+                       if hasattr(agent, "skills") else None),
             "tools": agent.registry.names(),
             # Runtime-disabled subset of ``tools`` (the /api/tools panel's
             # toggles); empty for a stock session.
@@ -660,6 +664,44 @@ def make_app(session: WebSession, static_dir: Path | None = None,
         else:
             registry.disable(name)
         # Broadcast so every open tab's chip count follows along.
+        session.broadcast({"type": "state", **session.state()})
+        return session.state()
+
+    # ---- skills ---------------------------------------------------------------
+
+    def require_skills() -> Any:
+        skills = getattr(session.agent, "skills", None)
+        if skills is None:
+            raise HTTPException(400, "skills are off for this session")
+        return skills
+
+    @app.get("/api/skills")
+    def skills_list() -> dict[str, Any]:
+        """The skills panel's data: the set, what broke, what was loaded."""
+        require_ready()
+        return require_skills().describe()
+
+    @app.get("/api/skills/{name}")
+    def skill_body(name: str) -> dict[str, Any]:
+        """One skill's instructions, for reading in the panel. Reading your
+        own file should not cost a model turn -- same rule as /skills NAME
+        in the REPL, so this does NOT mark the skill as loaded."""
+        require_ready()
+        skill = require_skills().get(name)
+        if skill is None:
+            raise HTTPException(404, f"no such skill: {name!r}")
+        return {"name": skill.name, "description": skill.description,
+                "source": skill.source, "path": str(skill.path),
+                "allowed_tools": list(skill.allowed_tools), "body": skill.body}
+
+    @app.post("/api/skills/reload")
+    def skills_reload() -> dict[str, Any]:
+        """Re-scan every root after editing a SKILL.md. require_idle: the
+        roster is a system-prompt layer, and rewriting the prompt under a
+        running turn changes the request mid-flight."""
+        require_ready()
+        require_idle()
+        require_skills().reload()
         session.broadcast({"type": "state", **session.state()})
         return session.state()
 

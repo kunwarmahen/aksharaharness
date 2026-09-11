@@ -822,3 +822,92 @@ def test_remember_flag_persists_the_entry(tmp_path):
     assert saved == {"kept"}
     client.post("/api/mcp/remove", json={"name": "kept"})
     assert load_remembered(manager.memory_path) == []
+
+
+# ---- skills panel -------------------------------------------------------------
+
+
+SKILL_MD = """\
+---
+name: pr-review
+description: Review a git diff for correctness bugs and missing tests.
+  Use when asked to review a PR or the working tree.
+---
+
+# PR review
+
+1. Get the diff.
+"""
+
+
+def make_skill_session(tmp_path, *, name="pr-review", text=SKILL_MD):
+    """A --web session with one skill on disk, wired like cli/main.py."""
+    from akshara.skills import enable_skills
+
+    folder = tmp_path / "skills" / name
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "SKILL.md").write_text(text)
+    session, agent = make_session([])
+    enable_skills(agent, tmp_path, home=tmp_path / "home")
+    return session, agent
+
+
+def test_state_carries_a_skills_snapshot(tmp_path):
+    session, _ = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    state = client.get("/api/state").json()
+    assert state["skills"]["skills"][0]["name"] == "pr-review"
+    assert state["skills"]["loaded"] == []
+
+
+def test_state_reports_none_when_skills_are_off():
+    # --no-skills / embedders: the panel hides rather than erroring
+    session, _ = make_session([])
+    client = TestClient(make_app(session))
+    assert client.get("/api/state").json()["skills"] is None
+
+
+def test_skills_endpoint_lists_the_set_and_what_broke(tmp_path):
+    session, _ = make_skill_session(tmp_path)
+    (tmp_path / "skills" / "broken").mkdir()
+    (tmp_path / "skills" / "broken" / "SKILL.md").write_text("junk\n")
+    client = TestClient(make_app(session))
+    client.post("/api/skills/reload")
+    body = client.get("/api/skills").json()
+    assert [s["name"] for s in body["skills"]] == ["pr-review"]
+    assert "missing frontmatter" in body["broken"][0]["reason"]
+
+
+def test_reading_a_skill_in_the_panel_does_not_mark_it_loaded(tmp_path):
+    # same rule as /skills NAME: reading your own file is not the model
+    # loading it, and the panel's dots must not lie about that
+    session, agent = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    body = client.get("/api/skills/pr-review").json()
+    assert "# PR review" in body["body"]
+    assert agent.skills.loaded == []
+
+
+def test_unknown_skill_is_a_clean_404(tmp_path):
+    session, _ = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    assert client.get("/api/skills/nope").status_code == 404
+
+
+def test_reload_rewrites_the_roster_layer(tmp_path):
+    session, agent = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    folder = tmp_path / "skills" / "release-cut"
+    folder.mkdir()
+    (folder / "SKILL.md").write_text(SKILL_MD.replace("pr-review", "release-cut"))
+    state = client.post("/api/skills/reload").json()
+    assert [s["name"] for s in state["skills"]["skills"]] == \
+        ["pr-review", "release-cut"]
+    assert "- release-cut:" in agent.system
+
+
+def test_skills_endpoints_400_when_skills_are_off():
+    session, _ = make_session([])
+    client = TestClient(make_app(session))
+    assert client.get("/api/skills").status_code == 400
+    assert client.post("/api/skills/reload").status_code == 400

@@ -38,6 +38,7 @@ from akshara.permissions import MODES, PermissionRequest, SwitchableGate, yolo
 from akshara.providers import get_provider
 from akshara.sandbox import ToolSandbox
 from akshara.session import SessionStore, apply_payload
+from akshara.skills.loader import skill_roots
 from akshara.tools import default_registry
 
 HELP = """[bold]commands[/bold]
@@ -51,6 +52,10 @@ HELP = """[bold]commands[/bold]
                      show what the agent auto-detected about your machine/
                      location, or switch session awareness (bare = show;
                      full adds your city via one public-IP lookup)
+  /skills            list skills on disk (loaded ones marked, broken ones
+                     explained); /skills reload re-scans after you edit one
+  /skills NAME       show one skill's instructions without spending a turn
+  /NAME ...          run a skill directly: /pr-review the auth branch
   /mcp               list connected mcp servers
   /mcp add ...       connect a server MID-SESSION: /mcp add NAME URL, or
                      /mcp add NAME COMMAND [ARGS...] (asks whether to save)
@@ -366,11 +371,93 @@ class Repl:
                 self._load_session(arg or "default")
             case "image":
                 self._image_command(arg)
+            case "skills":
+                self._skills_command(arg)
             case "quit" | "exit":
                 return True
             case _:
+                # A skill name is a command: /pr-review <anything> runs a
+                # normal turn with that skill's instructions already in
+                # hand. Built-ins win the name, which is why this lives in
+                # the fallback rather than ahead of the match.
+                if self._run_skill_command(name, arg):
+                    return False
                 self.console.print(f"[red]unknown command {line!r} — /help[/red]")
         return False
+
+    # ---- skills ---------------------------------------------------------------
+
+    def _skills_command(self, arg: str) -> None:
+        """/skills lists what is on disk; ``/skills reload`` re-scans after
+        you write one; ``/skills NAME`` prints a skill's instructions
+        locally -- reading your own file should not cost a model turn."""
+        skills = getattr(self.agent, "skills", None)
+        if skills is None:
+            self.console.print("[yellow]skills are off for this session "
+                               "(--no-skills)[/yellow]")
+            return
+        if arg == "reload":
+            found = skills.reload()
+            self.console.print(f"[green]rescanned[/green] -- {len(found)} "
+                               f"skill(s), {len(found.broken)} broken")
+            return
+        if arg:
+            skill = skills.get(arg)
+            if skill is None:
+                near = skills.suggestions(arg)
+                hint = f" (did you mean {', '.join(near)}?)" if near else ""
+                self.console.print(f"[red]no skill {arg!r}{hint}[/red]")
+                return
+            # PLAIN: a SKILL.md is arbitrary markdown and may contain rich
+            # markup that would otherwise be swallowed or crash the render.
+            self.console.print(f"{skill.name} · {skill.source} · {skill.path}",
+                               markup=False)
+            self.console.print(skill.body, markup=False)
+            return
+        self.console.print(self._skills_panel(skills), markup=False)
+
+    def _skills_panel(self, skills: Any) -> str:
+        """Bare-/skills text. PLAIN, for the same reason /env's panel is."""
+        if not len(skills) and not skills.found.broken:
+            roots = ", ".join(str(root) for root, _ in
+                              skill_roots(Path(self.agent.ctx.cwd)))
+            return f"no skills found. Put one in: {roots}"
+        lines = [f"{len(skills)} skill(s):"]
+        for skill in skills:
+            mark = "*" if skill.name in skills.loaded else " "
+            lines.append(f" {mark} {skill.name} [{skill.source}] "
+                         f"-- {skill.description}")
+        for broken in skills.found.broken:
+            lines.append(f" ! {broken.path}: {broken.reason}")
+        for name, path in skills.found.shadowed:
+            lines.append(f" ~ {name} shadowed: {path}")
+        if skills.loaded:
+            lines.append(f"loaded this session: {', '.join(skills.loaded)}")
+        return "\n".join(lines)
+
+    def _run_skill_command(self, name: str, arg: str) -> bool:
+        """``/pr-review the auth branch`` -> a normal turn, skill in hand.
+
+        The instructions are prepended to the user's own words rather
+        than injected anywhere clever: the model sees one message saying
+        what to do and what to do it to, and the transcript shows exactly
+        what was sent. Returns False when the name is not a skill, so the
+        caller can fall through to its unknown-command error.
+        """
+        skills = getattr(self.agent, "skills", None)
+        if skills is None or skills.get(name) is None:
+            return False
+        skill = skills.load(name)
+        task = arg or "Follow this skill for the current task."
+        message = (f"Use the {skill.name!r} skill.\n\n"
+                   f"Its instructions (from {skill.path}):\n{skill.body}\n\n"
+                   f"Task: {task}")
+        self.console.print(f"[dim]running skill {skill.name!r}[/dim]")
+        try:
+            self.run_turn(message, images=self._take_pending_images())
+        except KeyboardInterrupt:
+            self.console.print("\n[yellow](cancelled)[/yellow]")
+        return True
 
     # ---- tools ----------------------------------------------------------------
 
