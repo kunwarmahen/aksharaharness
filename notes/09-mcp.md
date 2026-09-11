@@ -370,8 +370,19 @@ Decisions worth writing down:
   land on a different port and fail at the last step with a redirect
   mismatch that explains nothing. This was written wrong once, exactly
   that way, before the test caught it.
-* **`state` is checked and a mismatch refuses the redirect.** That is
-  the CSRF check earning its keep, not a formality.
+* **`state` is checked and a mismatch refuses the redirect** -- but
+  AFTER the server's own `error` parameter, and only when there is a
+  code to accept. Checking it first cost a real debugging session: an
+  error redirect that omits `state` (plenty do) got reported as a CSRF
+  failure, burying the one fact the user needed.
+* **Only a request carrying `code` or `error` counts as the redirect.**
+  The browser sends more than you asked for -- it fetches
+  `/favicon.ico` for the success page, and may prefetch on its own
+  schedule. An earlier handler recorded every GET, so a query-less
+  favicon overwrote the real redirect and the flow died claiming CSRF.
+  The success page now also carries `<link rel="icon" href="data:,">`
+  so the request is never made; either guard alone is enough, and
+  having both is cheap.
 * **Tokens live in `~/.local/state/akshara/mcp-tokens.json`, mode
   0600**, set on the temp file BEFORE the rename so the secret is never
   briefly world-readable. Not `.akshara/` -- that sits in a working

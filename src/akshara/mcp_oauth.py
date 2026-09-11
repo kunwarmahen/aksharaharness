@@ -212,13 +212,33 @@ def make_pkce() -> tuple[str, str]:
 
 
 class _RedirectCatcher(BaseHTTPRequestHandler):
-    """One-shot handler: record the query, say something human, stop."""
+    """Record the OAUTH redirect -- and only that.
+
+    A browser sends more than the one request you asked for: it fetches
+    /favicon.ico for the page below, and may prefetch or re-request on
+    its own schedule. An earlier version recorded EVERY GET, so a
+    favicon (no query, therefore no ``state``) overwrote the real
+    redirect and the flow died claiming a CSRF mismatch. Only a request
+    actually carrying ``code`` or ``error`` counts; everything else gets
+    a 404 and is forgotten.
+    """
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler's name)
         from urllib.parse import parse_qs
-        query = parse_qs(urlparse(self.path).query)
-        self.server.result = {k: v[0] for k, v in query.items()}  # type: ignore[attr-defined]
-        body = (b"<html><body style='font:16px system-ui;padding:3rem'>"
+        query = {k: v[0] for k, v in
+                 parse_qs(urlparse(self.path).query).items()}
+        if "code" not in query and "error" not in query:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.server.result = query  # type: ignore[attr-defined]
+        # The empty data: icon is not decoration -- it stops the browser
+        # requesting /favicon.ico, which is the noise the guard above
+        # exists to survive. Belt and braces: either one alone suffices.
+        body = (b"<html><head><link rel='icon' href='data:,'>"
+                b"<title>Signed in</title></head>"
+                b"<body style='font:16px system-ui;padding:3rem'>"
                 b"<h2>Signed in.</h2><p>You can close this tab and go back "
                 b"to the terminal.</p></body></html>")
         self.send_response(200)
@@ -258,16 +278,28 @@ class RedirectListener:
         while time.monotonic() < deadline:
             result = getattr(self._httpd, "result", None)
             if result is not None:
-                if result.get("state") != state:
-                    raise MCPAuthError(
-                        "the redirect carried the wrong 'state' -- refusing "
-                        "it. That is the CSRF check doing its job; start "
-                        "the login again")
+                # The server's own complaint comes FIRST. Checking state
+                # ahead of it means an error redirect that omits state --
+                # plenty do -- is reported as a CSRF failure, which hides
+                # the one piece of information the user needed.
                 if "error" in result:
                     detail = result.get("error_description")
                     raise MCPAuthError(
                         f"authorization refused: {result['error']}"
                         + (f" ({detail})" if detail else ""))
+                # Only now, with a code on the table, does state matter --
+                # it guards accepting one, and there is nothing to accept
+                # in the branch above.
+                if result.get("state") != state:
+                    arrived = ", ".join(sorted(result)) or "nothing"
+                    got = result.get("state")
+                    raise MCPAuthError(
+                        "the redirect carried "
+                        + ("no 'state' at all" if got is None
+                           else "a 'state' we did not send")
+                        + f" -- refusing the code. Parameters that arrived: "
+                          f"{arrived}. That is the CSRF check doing its job; "
+                          "start the login again")
                 code = result.get("code")
                 if not code:
                     raise MCPAuthError(

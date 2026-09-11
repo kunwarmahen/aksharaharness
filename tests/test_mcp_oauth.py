@@ -204,7 +204,8 @@ class TestRedirectListener:
         try:
             threading.Timer(0.1, self._hit,
                             (listener, "code=abc&state=ATTACKER")).start()
-            with pytest.raises(MCPAuthError, match="wrong 'state'"):
+            with pytest.raises(MCPAuthError,
+                               match="'state' we did not send"):
                 listener.wait("st", timeout=5.0)
         finally:
             listener.close()
@@ -217,6 +218,55 @@ class TestRedirectListener:
                 "error=access_denied&error_description=user+said+no"
                 "&state=st")).start()
             with pytest.raises(MCPAuthError, match="access_denied"):
+                listener.wait("st", timeout=5.0)
+        finally:
+            listener.close()
+
+    def test_a_favicon_request_does_not_clobber_the_redirect(self):
+        """What actually broke in the field: the browser fetches
+        /favicon.ico for our 'Signed in.' page, and an earlier handler
+        recorded every GET -- so a query-less request overwrote the real
+        redirect and the flow died claiming CSRF."""
+        listener = RedirectListener()
+        try:
+            def noise_then_code():
+                httpx.get(f"http://127.0.0.1:{listener.port}/favicon.ico",
+                          timeout=5.0)
+                httpx.get(f"http://127.0.0.1:{listener.port}/callback"
+                          "?code=abc&state=st", timeout=5.0)
+            threading.Timer(0.05, noise_then_code).start()
+            assert listener.wait("st", timeout=5.0) == "abc"
+        finally:
+            listener.close()
+
+    def test_noise_after_the_code_is_ignored_too(self):
+        listener = RedirectListener()
+        try:
+            self._hit(listener, "code=abc&state=st")
+            httpx.get(f"http://127.0.0.1:{listener.port}/favicon.ico",
+                      timeout=5.0)
+            assert listener.wait("st", timeout=5.0) == "abc"
+        finally:
+            listener.close()
+
+    def test_an_error_without_state_reports_the_error_not_csrf(self):
+        """Ordering bug from the field: checking state first turned the
+        server's actual complaint into a misleading CSRF message."""
+        listener = RedirectListener()
+        try:
+            threading.Timer(0.05, self._hit, (
+                listener, "error=invalid_client&error_description=unknown"
+            )).start()
+            with pytest.raises(MCPAuthError, match="invalid_client"):
+                listener.wait("st", timeout=5.0)
+        finally:
+            listener.close()
+
+    def test_a_missing_state_says_so_and_lists_what_arrived(self):
+        listener = RedirectListener()
+        try:
+            threading.Timer(0.05, self._hit, (listener, "code=abc")).start()
+            with pytest.raises(MCPAuthError, match="no 'state' at all"):
                 listener.wait("st", timeout=5.0)
         finally:
             listener.close()
