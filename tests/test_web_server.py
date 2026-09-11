@@ -806,6 +806,55 @@ def test_add_validates_the_field_shape():
                              "headers": {"A": "b"}}).status_code == 400
 
 
+def test_login_needs_a_url_for_a_server_that_never_connected():
+    """The whole point of the button: a 401 server has no session and no
+    row, so the url has to arrive with the request."""
+    session, _, _ = make_mcp_session()
+    client = TestClient(make_app(session))
+    r = client.post("/api/mcp/login", json={"name": "ghost"})
+    assert r.status_code == 404
+    assert "url must come with the request" in r.text
+
+
+def test_login_refuses_a_stdio_server():
+    session, _, manager = make_mcp_session()
+    client = TestClient(make_app(session))
+    r = client.post("/api/mcp/login",
+                    json={"name": "x", "url": ""})
+    assert r.status_code == 404  # blank url is no url
+
+
+def test_login_reports_a_server_that_needs_no_login(monkeypatch):
+    """An endpoint that answers the handshake is already usable; saying
+    'signed in' would be a lie and running a browser flow a waste."""
+    session, _, _ = make_mcp_session()
+    client = TestClient(make_app(session))
+
+    class Probe:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("akshara.mcp.MCPHttpSession", Probe)
+    r = client.post("/api/mcp/login",
+                    json={"name": "open", "url": "http://x/mcp"})
+    assert r.status_code == 200 and r.json()["already"] is True
+
+
+def test_login_requires_an_idle_turn():
+    session, _, _ = make_mcp_session()
+    session.turn_active = True
+    client = TestClient(make_app(session))
+    assert client.post("/api/mcp/login",
+                       json={"name": "x", "url": "http://y"}
+                       ).status_code == 409
+
+
 def test_add_and_remove_refuse_to_race_a_running_turn():
     session, _, _ = make_mcp_session()
     session.turn_active = True

@@ -289,14 +289,12 @@ spec's authorization challenge:
 www-authenticate: Bearer resource_metadata="https://…/.well-known/oauth-protected-resource/…"
 ```
 
-which is an invitation to run the OAuth 2.1 flow the 2025-06-18 spec
-defines for HTTP transports: fetch that metadata document, discover the
-authorization server, register (often dynamically, RFC 7591), send the
-user through an authorization-code + PKCE round trip in a browser,
-exchange the code for an access token, then put
-`Authorization: Bearer …` on every subsequent request. **The browser
-dance is not built.** What IS built is the last step, which is all most
-servers actually check -- `MCPServerConfig.headers`:
+which is an invitation, not a wall. Two ways in, and which one you
+need depends on how the vendor issues credentials.
+
+#### If the server hands out a static token
+
+Put it in `headers`, the HTTP transport's answer to stdio's `env`:
 
 ```json
 {"servers": {"vendor": {
@@ -304,12 +302,8 @@ servers actually check -- `MCPServerConfig.headers`:
    "headers": {"Authorization": "Bearer ${VENDOR_TOKEN}"}}}}
 ```
 
-`headers` is the HTTP transport's answer to stdio's `env`: same job,
-same place in the config, refused outright on a server that has no
-`url` (silently dropping a credential would resurface as an
-unexplained 401 an hour later). Bring the token yourself -- from the
-vendor's dashboard, or an OAuth flow you ran elsewhere -- and the
-server is reachable.
+Refused outright on a server with no `url`: silently dropping a
+credential resurfaces as an unexplained 401 an hour later.
 
 **`${VAR}` is expanded from the environment at connect time**, and
 that indirection is the point rather than a convenience. `remember`
@@ -336,6 +330,74 @@ endpoint above: without it the server says `authentication required`;
 with a deliberately wrong token it says `JWT verification failed`. The
 second error is the server having read the credential and disliked it
 -- which is exactly the state a correct token turns into a session.
+
+#### If the server only issues tokens through a login
+
+Most commercial ones do, and then there is no token to paste: the flow
+IS the credential. `akshara --mcp-login NAME` walks it
+([mcp_oauth.py](../src/akshara/mcp_oauth.py)), and the panel's 🔑 on any
+http row does the same thing from the browser you already have open.
+
+```bash
+uv run akshara --mcp-login vendor --mcp-config vendor.json
+```
+
+Five RFCs' worth of moving parts, and the walk between them is short
+enough to write out:
+
+1. the 401's `WWW-Authenticate` names a **protected-resource metadata**
+   document (RFC 9728) -> which authorization server guards this thing;
+2. that server's own metadata (RFC 8414) -> where to register,
+   authorize, and collect tokens. The `.well-known` segment goes BEFORE
+   the issuer's path, which surprises everyone, so both spellings get
+   tried;
+3. **dynamic client registration** (RFC 7591) -> a `client_id`, with no
+   developer-portal visit. These servers advertise
+   `token_endpoint_auth_methods: ["none"]` -- a PUBLIC client, which is
+   the only honest posture for a CLI that ships its own source;
+4. the browser, carrying a **PKCE** challenge (RFC 7636). A public
+   client has no secret, so the authorization code is the only thing
+   between an attacker who can see the redirect and a live token; the
+   verifier, held only in this process, is what proves the code is
+   being redeemed by whoever asked for it;
+5. the code plus the verifier buy an access token and a refresh token.
+
+Decisions worth writing down:
+
+* **The redirect port is bound FIRST and held for the whole flow.**
+  Registration names the `redirect_uri`, so the port has to be ours
+  before we can quote it -- a listener rebound after registering can
+  land on a different port and fail at the last step with a redirect
+  mismatch that explains nothing. This was written wrong once, exactly
+  that way, before the test caught it.
+* **`state` is checked and a mismatch refuses the redirect.** That is
+  the CSRF check earning its keep, not a formality.
+* **Tokens live in `~/.local/state/akshara/mcp-tokens.json`, mode
+  0600**, set on the temp file BEFORE the rename so the secret is never
+  briefly world-readable. Not `.akshara/` -- that sits in a working
+  directory, and a refresh token is a long-lived credential one
+  `git add -A` in one careless repo away from being public.
+* **A 401 raises `MCPAuthRequired`, a subclass of `MCPError`.** Every
+  existing "warn and skip this server" path keeps working untouched,
+  while callers that want to offer a login can catch the narrower type
+  and read the challenge off it.
+* **One refresh-and-retry on a 401 mid-session.** The server disagreeing
+  with our expiry arithmetic means the server is right, so the token is
+  refreshed even when it still looks live, and the request goes again
+  exactly once.
+* **A refresh response that omits `refresh_token` keeps the old one.**
+  Dropping it would log the user out at the next expiry for no reason.
+* **An explicitly configured `Authorization` header wins over a stored
+  token.** The operator said what they wanted; second-guessing it would
+  make the two features fight.
+
+What is still missing: nothing in the flow, but it is only exercised
+against a fake authorization server in the suite -- 37 tests, with the
+redirect half running on a real socket because a bound port, a `state`
+and a one-shot handler have to agree and a mock would only report that
+they did. The discovery half IS verified against vendor's live
+metadata; the registration and browser halves need somebody's actual
+account.
 
 Every panel action is a plain endpoint underneath -- `/api/mcp`,
 `/api/mcp/add`, `/api/mcp/toggle`, `/api/mcp/remove` -- so the same
@@ -380,11 +442,9 @@ read the header back off a real socket and assert the pool is closed.
 
 ## Deliberately not built
 
-**The OAuth 2.1 handshake** for HTTP transports -- protected-resource
-metadata discovery, dynamic client registration, authorization-code +
-PKCE, token refresh. A token you already hold goes in `headers` (above)
-and works today; what is missing is the client GETTING one for you,
-which means a browser round trip and a redirect listener.
+Client-credentials and device-code grants (the browser flow covers the
+interactive case, which is what MCP vendors ship); token revocation on
+`/mcp remove` (we forget ours, the server keeps its record).
 
 Standalone GET stream and RPC batching (see above); resources, prompts,
 and sampling capabilities (tools are the 90% case);

@@ -93,6 +93,24 @@ class MCPError(Exception):
     """
 
 
+class MCPAuthRequired(MCPError):
+    """A server answered 401 and said how to authenticate.
+
+    Carries the challenge so a caller can run the OAuth walk
+    (``akshara --mcp-login NAME``, or the panel's authenticate button)
+    instead of printing a dead end. Subclasses MCPError so every
+    existing ``except MCPError`` path -- warn and skip the server --
+    keeps working untouched.
+    """
+
+    def __init__(self, message: str, *, server: str, resource_url: str,
+                 challenge: str) -> None:
+        super().__init__(message)
+        self.server = server
+        self.resource_url = resource_url
+        self.challenge = challenge
+
+
 @dataclass(slots=True)
 class MCPServerConfig:
     """How to reach one MCP server.
@@ -234,6 +252,25 @@ def _expand_env_refs(value: str, *, server: str, where: str) -> str:
             f"{'is' if len(missing) == 1 else 'are'} not set in the "
             "environment (put it in .env or export it before launching)")
     return expanded
+
+
+def _stored_access_token(server_name: str, *, force: bool = False) -> str | None:
+    """A saved OAuth token for this server, if the user ever logged in.
+
+    Imported lazily: mcp_oauth pulls in http.server and webbrowser, which
+    a stdio-only session has no business paying for.
+    """
+    try:
+        from akshara.mcp_oauth import MCPAuthError, access_token_for
+    except ImportError:  # pragma: no cover - module ships with the package
+        return None
+    try:
+        return access_token_for(server_name, force=force)
+    except MCPAuthError:
+        # A refresh that fails is not fatal here: fall through to the
+        # unauthenticated attempt and let the server's own 401 -- which
+        # carries the challenge -- drive the "log in again" message.
+        return None
 
 
 def _require_supported_version(negotiated: str, server_name: str) -> str:
@@ -544,12 +581,20 @@ class MCPHttpSession:
                                   where=f"header {key!r}")
             for key, value in (config.headers or {}).items()
         }
+        # A token saved by `--mcp-login` fills the Authorization slot --
+        # unless the config set one explicitly, in which case the operator
+        # said what they wanted and we do not second-guess it.
+        self._configured_auth = any(k.lower() == "authorization"
+                                    for k in self._extra_headers)
+        self._token: str | None = None
         self._client = httpx.Client(timeout=timeout, transport=transport)
 
     # ---- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
         """Initialize handshake over POST; capture the session header."""
+        if not self._configured_auth:
+            self._token = _stored_access_token(self.config.name)
         try:
             result = self._rpc("initialize", {
                 "protocolVersion": SUPPORTED_VERSIONS[0],
@@ -612,6 +657,8 @@ class MCPHttpSession:
         # "MCP-Protocol-Version" in someone's config would otherwise
         # break the handshake in a way that looks like a server bug.
         headers = dict(self._extra_headers)
+        if self._token and not self._configured_auth:
+            headers["Authorization"] = f"Bearer {self._token}"
         headers |= {"Accept": "application/json, text/event-stream",
                     "Content-Type": "application/json"}
         if self._session_id is not None:
@@ -641,11 +688,28 @@ class MCPHttpSession:
         return response
 
     def _rpc(self, method: str, params: dict[str, Any],
-             timeout: float | None = None) -> dict[str, Any]:
+             timeout: float | None = None,
+             retried: bool = False) -> dict[str, Any]:
         msg_id = next(self._ids)
         response = self._post({"jsonrpc": "2.0", "id": msg_id,
                                "method": method, "params": params},
                               timeout=timeout)
+        if response.status_code == 401:
+            # The server disagrees with our expiry arithmetic, and the
+            # server is right -- refresh once and retry before giving up.
+            if self._token and not self._configured_auth and not retried:
+                fresh = _stored_access_token(self.config.name, force=True)
+                if fresh and fresh != self._token:
+                    self._token = fresh
+                    return self._rpc(method, params, timeout=timeout,
+                                     retried=True)
+            raise MCPAuthRequired(
+                f"mcp server {self.config.name!r} needs authentication "
+                f"(HTTP 401 on {method!r}): run "
+                f"`akshara --mcp-login {self.config.name}`, or use the "
+                f"panel's authenticate button",
+                server=self.config.name, resource_url=self.config.url or "",
+                challenge=response.headers.get("www-authenticate", ""))
         if response.status_code != 200:
             raise MCPError(
                 f"mcp server {self.config.name!r} rejected {method!r}: "

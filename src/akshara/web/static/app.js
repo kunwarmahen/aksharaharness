@@ -987,6 +987,16 @@ function mcpRow(s) {
   sw.append(box, knob);
   row.append(sw);
 
+  if (s.transport === "http") {
+    const auth = document.createElement("button");
+    auth.className = "m-btn mcp-login";
+    auth.textContent = "🔑";
+    auth.title = "sign in to this server (OAuth) — also how you refresh "
+      + "an expired login";
+    auth.onclick = () => mcpLogin(s.name, s.target, auth);
+    row.append(auth);
+  }
+
   const rm = document.createElement("button");
   rm.className = "m-btn danger mcp-remove";
   rm.textContent = "✕";
@@ -1118,9 +1128,49 @@ $("#mcp-submit").onclick = async () => {
   if (failed.length) {
     err.textContent = failed.map((r) => `${r.name}: ${r.error}`).join("\n");
     err.classList.remove("hidden");
+    // A 401 is the one failure with an obvious next move, so offer it
+    // here rather than making the reader work out that "needs
+    // authentication" means "there is a button for this".
+    const needsAuth = failed.find((r) =>
+      /needs authentication|HTTP 401/i.test(r.error || ""));
+    if (needsAuth && body.url) {
+      const go = document.createElement("button");
+      go.className = "m-btn primary";
+      go.style.marginTop = ".5rem";
+      go.textContent = `sign in to ${needsAuth.name}`;
+      go.onclick = () => mcpLogin(needsAuth.name, body.url, go);
+      err.append(document.createElement("br"), go);
+    }
   }
   refreshMCPRows();
 };
+
+// Shared by the add-form's 401 and a row's padlock: the browser opens on
+// the machine running the server, so the button goes quiet for as long as
+// that takes and reports whichever way it lands.
+async function mcpLogin(name, url, button) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "waiting for the browser…";
+  try {
+    const out = await post("/api/mcp/login", url ? { name, url } : { name });
+    if (!out) return;
+    if (out.ok) {
+      toast(out.already
+        ? `${name} needed no login`
+        : `${name} signed in — ${out.tools} tool(s)`);
+      applyHeader(out);
+      collapseAddForm();
+      refreshMCPRows();
+      return;
+    }
+    toast(`${name}: ${out.error}`);
+    if (out.authorize_url) window.open(out.authorize_url, "_blank");
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
 
 function toolRow(t) {
   const row = document.createElement("div");

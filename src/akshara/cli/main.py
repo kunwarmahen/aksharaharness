@@ -29,8 +29,10 @@ from akshara.config import (
 from akshara.env_context import EnvContext
 from akshara.errors import ConfigError, ImageError, ToolError, UserUnavailable
 from akshara.images import load_image_block
-from akshara.mcp import (MCPError, MCPManager, load_mcp_configs,
+from akshara.mcp import (MCPAuthRequired, MCPError, MCPHttpSession,
+                         MCPManager, MCPServerConfig, load_mcp_configs,
                          load_remembered, remembered_path)
+from akshara.mcp_oauth import TOKEN_FILE
 from akshara.permissions import SwitchableGate, trust_sandbox, yolo
 from akshara.providers import get_provider
 from akshara.sandbox import autodetect
@@ -107,6 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "captchas included -- then close the window. "
                              "Every later headless session on that profile "
                              "starts logged-in. No model, no API key needed")
+    parser.add_argument("--mcp-login", metavar="NAME", dest="mcp_login",
+                        default=None,
+                        help="one-time LOGIN for an authenticated MCP server: "
+                             "runs the OAuth flow in your browser and saves "
+                             "the token under ~/.local/state/akshara. NAME "
+                             "must be a server in --mcp-config or already "
+                             "remembered. No model, no API key needed")
     parser.add_argument("--prompt", help="one-shot mode: run this prompt and exit")
     parser.add_argument("--image", action="append", default=[], metavar="PATH",
                         help="attach an image (png/jpeg/gif/webp, <=5 MB) to "
@@ -292,6 +301,86 @@ def _browse_login(url: str, console: Console) -> int:
     return 0
 
 
+def _find_mcp_config(name: str, config_paths: list[str],
+                     cwd: str) -> MCPServerConfig | None:
+    """Look the server up wherever a launch would have found it."""
+    for path in config_paths:
+        for cfg in load_mcp_configs(Path(path)):
+            if cfg.name == name:
+                return cfg
+    for cfg in load_remembered(remembered_path(Path(cwd))):
+        if cfg.name == name:
+            return cfg
+    return None
+
+
+def _mcp_login(name: str, args, console: Console) -> int:
+    """--mcp-login NAME: the OAuth walk, then a token on disk.
+
+    Provider-free like --browse-login: authenticating a server has
+    nothing to do with which model you were going to talk to, so this
+    runs before any credential resolution.
+    """
+    from akshara.mcp_oauth import MCPAuthError, login
+
+    try:
+        cfg = _find_mcp_config(name, args.mcp_config, args.cwd)
+    except MCPError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if cfg is None:
+        print(f"error: no mcp server named {name!r} in --mcp-config or "
+              f"{remembered_path(Path(args.cwd))}\n"
+              "add it first (akshara --mcp-config FILE, or the web panel)",
+              file=sys.stderr)
+        return 2
+    if not cfg.url:
+        print(f"error: {name!r} is a stdio server (it runs a command); "
+              "there is nothing to log in to. Credentials for those go in "
+              "its 'env'", file=sys.stderr)
+        return 2
+
+    # The challenge has to come from the server itself -- it names the
+    # metadata document, and guessing that URL is how clients break when
+    # a vendor moves it.
+    session = MCPHttpSession(cfg, timeout=20.0)
+    try:
+        session.start()
+    except MCPAuthRequired as exc:
+        challenge = exc.challenge
+    except MCPError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    else:
+        session.close()
+        console.print(f"[green]{name} needs no login[/green] -- it answered "
+                      "the handshake without one")
+        return 0
+    finally:
+        session.close()
+
+    console.print(f"[bold]mcp login[/bold] · {name} · {cfg.url}\n"
+                  "a browser window is opening -- sign in there, then come "
+                  "back. Nothing is stored but the token itself, under\n"
+                  f"{TOKEN_FILE} (mode 0600).")
+    try:
+        token = login(name, cfg.url, challenge,
+                      on_url=lambda url: console.print(
+                          f"[dim]if no window opened, paste this:\n{url}"
+                          f"[/dim]"))
+    except KeyboardInterrupt:
+        console.print("\n[yellow](cancelled -- nothing saved)[/yellow]")
+        return 130
+    except MCPAuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    expiry = ("no stated expiry" if token.expires_at is None
+              else f"expires in {int(token.expires_at - time.time())}s")
+    console.print(f"[green]signed in[/green] -- token saved ({expiry}"
+                  + (", refreshable" if token.refresh_token else "") + ")")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     console = Console()
@@ -300,6 +389,12 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --image needs a prompt to attach to (--prompt or a "
               "positional PROMPT); interactive image input is not "
               "supported yet", file=sys.stderr)
+        return 2
+    if args.mcp_login is not None and (args.build or args.prompt
+                                       or args.prompt_positional
+                                       or args.web or args.browse_login):
+        print("error: --mcp-login is its own mode: drop --build/--prompt/"
+              "PROMPT/--web/--browse-login", file=sys.stderr)
         return 2
     if args.browse_login is not None and (args.build or args.prompt
                                           or args.prompt_positional
@@ -322,6 +417,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.browse_login is not None:
         _load_dotenv()  # the knob usually lives in .env
         return _browse_login(args.browse_login, console)
+
+    # Authenticating a server says nothing about which model you meant to
+    # use, so this runs before provider resolution too.
+    if args.mcp_login is not None:
+        _load_dotenv()
+        return _mcp_login(args.mcp_login, args, console)
 
     try:
         provider_name = args.provider or _guess_provider()

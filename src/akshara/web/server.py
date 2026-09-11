@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -882,6 +883,87 @@ def make_app(session: WebSession, static_dir: Path | None = None,
                 env=env, headers=headers))
         session.broadcast({"type": "state", **session.state()})
         return {"results": results, **session.state()}
+
+    @app.post("/api/mcp/login")
+    async def mcp_login(req: Request) -> dict[str, Any]:
+        """Run the OAuth walk for one server, then reconnect it.
+
+        Takes require_idle() for the same reason /add does: it ends by
+        re-registering the server's tools, and the browser step can sit
+        for minutes while a human types a password.
+
+        The browser opens on the machine running the SERVER, which is the
+        same machine as the panel in the localhost case this UI is built
+        for. When it isn't, ``authorize_url`` comes back in the response
+        so the operator can open it themselves.
+        """
+        from akshara.mcp import (MCPAuthRequired, MCPError, MCPHttpSession,
+                                 MCPServerConfig)
+        from akshara.mcp_oauth import MCPAuthError, forget_token, login
+
+        require_idle()
+        mcp = require_mcp()
+        body = await req.json()
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(400, "name is required")
+        name = name.strip()
+        # The common case is a server that 401'd and therefore never
+        # connected: it has no session and no row, so the url has to
+        # arrive with the request rather than be looked up.
+        session_for_name = mcp.sessions.get(name)
+        if session_for_name is not None:
+            config = session_for_name.config
+        else:
+            url = body.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise HTTPException(
+                    404, f"{name!r} is not connected, so its url must come "
+                         "with the request")
+            config = MCPServerConfig(name=name, url=url.strip())
+        if not config.url:
+            raise HTTPException(400, f"{name!r} is a stdio server -- there "
+                                     "is nothing to log in to; its "
+                                     "credentials belong in 'env'")
+
+        # The challenge must come FROM the server: it names the metadata
+        # document, and guessing that URL is how clients break when a
+        # vendor moves it.
+        probe = MCPHttpSession(config, timeout=20.0)
+        try:
+            probe.start()
+        except MCPAuthRequired as exc:
+            challenge = exc.challenge
+        except MCPError as exc:
+            raise HTTPException(502, str(exc)) from None
+        else:
+            return {"ok": True, "already": True, **session.state()}
+        finally:
+            probe.close()
+
+        shown: list[str] = []
+        try:
+            await run_in_threadpool(
+                login, name, config.url, challenge,
+                on_url=shown.append)
+        except MCPAuthError as exc:
+            return {"ok": False, "error": str(exc),
+                    "authorize_url": shown[0] if shown else None,
+                    **session.state()}
+
+        # Reconnect so the tools register against the fresh token.
+        if mcp.sessions.get(name) is not None:
+            try:
+                mcp.disconnect(name)
+            except MCPError:
+                pass
+        try:
+            names = mcp.connect(config)
+        except MCPError as exc:
+            forget_token(name)  # a token that cannot connect is noise
+            return {"ok": False, "error": str(exc), **session.state()}
+        session.broadcast({"type": "state", **session.state()})
+        return {"ok": True, "tools": len(names), **session.state()}
 
     @app.post("/api/mcp/remove")
     async def mcp_remove(req: Request) -> dict[str, Any]:

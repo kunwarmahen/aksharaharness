@@ -324,9 +324,21 @@ config file:
 
 `${MY_TOKEN}` resolves at connect time (unset ⇒ a named error, never a
 blank `Bearer`), and `remember` stores the placeholder rather than the
-token. The spec's full OAuth 2.1 *handshake* — discovery, dynamic
-registration, PKCE in a browser — is still not built, so bring your own
-token ([notes/09](notes/09-mcp.md#remote-servers-that-want-a-token)).
+token.
+
+Servers that only issue tokens through a login — most commercial ones —
+get the spec's OAuth 2.1 flow instead, hand-rolled like everything else
+here (discovery → dynamic registration → PKCE in your browser → refresh):
+
+```bash
+uv run akshara --mcp-login vendor --mcp-config vendor.json
+```
+
+The panel's 🔑 on any http row does the same from the browser you already
+have open. Tokens land in `~/.local/state/akshara/mcp-tokens.json` at
+mode 0600 — never in the working directory — and refresh themselves,
+including one retry when a server disagrees with our expiry arithmetic
+([notes/09](notes/09-mcp.md#remote-servers-that-want-a-token)).
 
 Servers are runtime furniture, not just startup wiring: `/mcp` lists
 them, `/mcp add NAME URL` (or `NAME COMMAND [ARGS...]`) connects one
@@ -570,6 +582,10 @@ src/akshara/
 │                   handshake, tools/list, tools/call; MCPManager adds/
 │                   removes/toggles servers mid-session, .akshara/mcp.json
 │                   remembers them ([notes/09](notes/09-mcp.md))
+├── mcp_oauth.py    OAuth 2.1 for authenticated HTTP servers, by hand:
+│                   RFC 9728/8414 discovery, RFC 7591 dynamic
+│                   registration, PKCE + a localhost redirect listener,
+│                   0600 token store with refresh ([notes/09](notes/09-mcp.md))
 ├── evals.py        trajectory evals: completion/correctness/process/cost,
 │                   recording tool proxy, LLM judge; AsyncEvalRunner twin
 │                   runs cases concurrently, shared scoring ([notes/10](notes/10-evals.md))

@@ -509,6 +509,51 @@ def http_server(tmp_path: Path):
         _reap(proc)
 
 
+class TestMcpLoginFlag:
+    """CLI wiring for --mcp-login: its own mode, dispatched before any
+    provider resolution -- authenticating a server says nothing about
+    which model you meant to use."""
+
+    def _config(self, tmp_path, spec):
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"servers": spec}))
+        return str(path)
+
+    def test_unknown_server_names_where_it_looked(self, tmp_path, capsys):
+        from akshara.cli import main as cli_main
+        cfg = self._config(tmp_path, {"other": {"url": "http://x/mcp"}})
+        assert cli_main.main(["--mcp-login", "ghost", "--mcp-config", cfg,
+                              "--cwd", str(tmp_path)]) == 2
+        assert "no mcp server named 'ghost'" in capsys.readouterr().err
+
+    def test_stdio_server_has_nothing_to_log_in_to(self, tmp_path, capsys):
+        from akshara.cli import main as cli_main
+        cfg = self._config(tmp_path, {"local": {"command": "py"}})
+        assert cli_main.main(["--mcp-login", "local", "--mcp-config", cfg,
+                              "--cwd", str(tmp_path)]) == 2
+        assert "stdio server" in capsys.readouterr().err
+
+    def test_it_is_its_own_mode(self):
+        from akshara.cli import main as cli_main
+        assert cli_main.main(["--mcp-login", "x", "--prompt", "hi"]) == 2
+
+    def test_a_server_needing_no_login_says_so_and_does_not_open_a_browser(
+            self, tmp_path, monkeypatch, capsys, http_server):
+        """The tiny fixture server authenticates nobody, so the flow must
+        stop before the browser rather than 'signing in' to nothing."""
+        from akshara.cli import main as cli_main
+        base = http_server()
+        cfg = self._config(tmp_path, {"tiny": {"url": base.url}})
+
+        def explode(*a, **k):  # pragma: no cover - must never run
+            raise AssertionError("opened a browser for an open server")
+
+        monkeypatch.setattr("akshara.mcp_oauth.login", explode)
+        assert cli_main.main(["--mcp-login", "tiny", "--mcp-config", cfg,
+                              "--cwd", str(tmp_path)]) == 0
+        assert "needs no login" in capsys.readouterr().out
+
+
 class TestAuthHeaders:
     """The HTTP transport's credential slot -- stdio has `env`, and until
     the spec's OAuth flow exists this is how a bearer token gets sent."""
