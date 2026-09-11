@@ -208,6 +208,10 @@ podman run -d --name akshara-local -p 8401:8321 \
     -e OLLAMA_MODEL=qwen3.8 \
     localhost/akshara-web --web --host 0.0.0.0 --provider ollama
 
+# your own skills: the image ships this repo's set, yours ride a mount
+podman run -d --name akshara-web --userns=keep-id -p 8400:8321 \
+    -v ./.env:/app/.env:ro -v ./skills:/app/skills:ro localhost/akshara-web
+
 podman logs -f akshara-web        # watch it boot
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8400/
 ```
@@ -718,7 +722,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 699 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 803 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The

@@ -21,6 +21,10 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --extra web
 
 COPY src/ src/
+# Skills are hand-written source, not machine state, so the repo's own
+# set travels with the image. Your project's skills are a run-time
+# mount: -v ./skills:/app/skills:ro (or $AKSHARA_SKILLS_PATH).
+COPY skills/ skills/
 RUN uv sync --frozen --extra web
 
 ENV PATH="/app/.venv/bin:$PATH"

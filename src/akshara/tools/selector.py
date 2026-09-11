@@ -66,8 +66,9 @@ CORE_PINS = ("read_file", "write_file", "edit_file",
              "bash", "glob", "grep", "load_skill")
 
 #: Width used when selection auto-enables past AUTO_SELECTION_THRESHOLD.
-#: Arithmetic: len(CORE_PINS) pins + the discovery hatch leaves ~5 slots
-#: for retrieved long-tail tools -- k below the pin count would leave
+#: Arithmetic: len(CORE_PINS) pins + the discovery hatch leaves four or
+#: five slots for retrieved long-tail tools (load_skill only occupies one
+#: in a project that has skills) -- k below the pin count would leave
 #: BM25 nothing to do.
 DEFAULT_TOOLS_PER_TURN = 12
 

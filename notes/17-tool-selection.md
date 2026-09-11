@@ -44,9 +44,15 @@ shares not one word with the query; BM25 correctly drops it, exactly
 when the turn needs it next. So six tools beat the query and load
 every turn regardless of score (`selector.CORE_PINS`): read_file,
 write_file, edit_file, bash, glob, grep — plus the discovery hatch.
-That arithmetic sets the auto-enable width: `DEFAULT_TOOLS_PER_TURN =
-12` leaves ~5 slots for the retrieved long tail (MCP servers, browser,
-background jobs), which is what selection was for in the first place.
+`load_skill` makes seven in a project that has skills (it is skipped
+when nothing registered it), for the same reason read from the other
+end: the roster in the system prompt *promises* the model it can load
+any skill named there, and a promise BM25 can drop is a promise broken
+on exactly the vague opening turns skills are written for
+([30-skills.md](30-skills.md)). That arithmetic sets the auto-enable
+width: `DEFAULT_TOOLS_PER_TURN = 12` leaves four or five slots for the
+retrieved long tail (MCP servers, browser, background jobs), which is
+what selection was for in the first place.
 
 ## Three pieces
 

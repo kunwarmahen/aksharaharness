@@ -6,6 +6,10 @@ Layers, outside in:
 * ``akshara.agent``   -- THE LOOP: model -> tool calls -> results -> repeat
 * ``akshara.providers`` -- wire-format adapters behind one streaming interface
 * ``akshara.tools``   -- what the model may do (fs, shell, grep) + sandboxing
+* ``akshara.skills``  -- procedural knowledge on disk: SKILL.md folders the
+                         model loads on demand (notes/30)
+* ``akshara.prompt``  -- the system prompt as ordered layers, so awareness
+                         and the skill roster can coexist in one string
 * ``types``/``errors`` -- shared vocabulary; the ONLY representation anywhere
 
 See README.md for the map and notes/ for per-topic write-ups.
@@ -23,8 +27,10 @@ from akshara.permissions import (
     yolo,
 )
 from akshara.pricing import ModelPrice, cost_of, price_for, session_cost
+from akshara.prompt import SystemPrompt, attach_prompt, recompose
 from akshara.providers import get_provider
 from akshara.providers.base import Provider, ProviderSettings, collect
+from akshara.skills import Skill, SkillRegistry, enable_skills
 from akshara.tools import default_registry
 from akshara.types import (
     Block,
@@ -52,6 +58,7 @@ __all__ = [
     "Agent",
     "AgentEvent",
     "allow_read_only",
+    "attach_prompt",
     "Block",
     "collect",
     "default_model",
@@ -73,12 +80,17 @@ __all__ = [
     "PermissionFn",
     "PermissionRequest",
     "Provider",
+    "recompose",
     "price_for",
     "session_cost",
     "ProviderSettings",
     "RedactedThinkingBlock",
     "StartEvent",
+    "Skill",
+    "SkillRegistry",
+    "enable_skills",
     "StopReason",
+    "SystemPrompt",
     "StreamEvent",
     "TextBlock",
     "TextDelta",
