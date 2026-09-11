@@ -664,3 +664,126 @@ class TestDisabledPatterns:
 
         monkeypatch.delenv("AKSHARA_DISABLED_SKILLS", raising=False)
         assert config.disabled_skill_patterns() == []
+
+
+# ---- authoring: writing a skill back to disk -------------------------------
+
+
+class TestRenderRoundTrip:
+    def test_what_it_writes_the_parser_reads_back(self, tmp_path):
+        from akshara.skills import render_skill_md
+
+        text = render_skill_md(
+            "repo-survey",
+            "Survey part of this codebase and report what is there. Use when "
+            "asked to explore or map out an unfamiliar area of the code.",
+            "# Surveying\n\n1. glob first.",
+            mode="subagent", allowed_tools=("read_file", "glob"),
+            output_format="One line per file.", max_iterations=15)
+        path = write_skill(tmp_path, "repo-survey", text)
+        skill = load_skill(path)
+        assert skill.delegated
+        assert skill.allowed_tools == ("read_file", "glob")
+        assert skill.max_iterations == 15
+        assert skill.body.startswith("# Surveying")
+
+    def test_a_long_description_folds_and_unfolds(self, tmp_path):
+        from akshara.skills import parse_frontmatter, render_skill_md
+
+        long = ("Cut a tagged release for this repo including the version "
+                "bump, the changelog line, the tag itself and the push. Use "
+                "when asked to cut, tag, or publish a release of any kind.")
+        text = render_skill_md("release-cut", long, "# Steps\n\n1. Go.")
+        assert max(len(line) for line in text.splitlines()) <= 76
+        fields, _ = parse_frontmatter(text)
+        assert fields["description"] == long
+
+    def test_inline_skills_carry_no_delegated_keys(self):
+        from akshara.skills import render_skill_md
+
+        text = render_skill_md("pr-review", "x" * 30, "# Do it")
+        assert "mode:" not in text
+        assert "max-iterations:" not in text
+
+
+class TestWriting:
+    def test_a_new_skill_lands_in_the_committed_root(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        skill = skills.write(
+            "release-cut",
+            "Cut a tagged release of this project. Use when asked to cut, "
+            "tag, or publish a release.",
+            "# Cutting a release\n\n1. Check the tree is clean.")
+        assert skill.path == tmp_path / "skills" / "release-cut" / SKILL_FILE
+        assert skill.source == "project"
+        assert "- release-cut:" in agent.system   # roster recomposed
+
+    def test_an_edit_rewrites_in_place_wherever_it_lives(self, tmp_path):
+        # writing an edit to a different root would create a shadowing copy
+        # and leave the original behind
+        write_skill(tmp_path / ".akshara" / "skills", "pr-review")
+        agent = _agent()
+        skills = enable_skills(agent, tmp_path, home=tmp_path / "home")
+        assert skills.get("pr-review").source == "local"
+        skill = skills.write("pr-review", "Review a git diff for bugs and "
+                             "missing tests. Use on any PR.", "# v2")
+        assert skill.path == tmp_path / ".akshara" / "skills" / "pr-review" / SKILL_FILE
+        assert not (tmp_path / "skills" / "pr-review").exists()
+        assert skill.body == "# v2"
+
+    def test_a_broken_draft_is_refused_before_anything_is_written(self, tmp_path):
+        _, skills = _wire(tmp_path, "pr-review")
+        with pytest.raises(SkillError, match="too thin"):
+            skills.write("release-cut", "does stuff", "# Go")
+        assert not (tmp_path / "skills" / "release-cut").exists()
+
+    def test_a_bad_name_cannot_address_a_path(self, tmp_path):
+        # the name is a path segment; traversal must die at the grammar
+        _, skills = _wire(tmp_path, "pr-review")
+        for bad in ("../escape", "has/slash", "../../etc/passwd", "", "  "):
+            with pytest.raises(SkillError, match="invalid name"):
+                skills.write(bad, "A perfectly fine description here.", "# b")
+
+    def test_an_editor_normalizes_case_rather_than_scolding(self, tmp_path):
+        # a hand-written SKILL.md with 'name: Shouty' is an error (the
+        # folder would disagree), but someone TYPING a name into a form
+        # meant the obvious thing -- and the row they get back says so
+        _, skills = _wire(tmp_path, "pr-review")
+        skill = skills.write("Release-Cut",
+                             "Cut a tagged release. Use when asked to tag "
+                             "or publish one.", "# Cutting")
+        assert skill.name == "release-cut"
+        assert skill.path.parent.name == "release-cut"
+
+    def test_delegated_rules_apply_to_written_skills_too(self, tmp_path):
+        _, skills = _wire(tmp_path, "pr-review")
+        with pytest.raises(SkillError, match="requires allowed-tools"):
+            skills.write("repo-survey",
+                         "Survey a directory and report what is in it.",
+                         "# Survey", mode="subagent")
+
+    def test_writing_a_delegated_skill_registers_run_skill(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        skills.write("repo-survey",
+                     "Survey a directory and report what lives there. Use "
+                     "when asked to explore a folder.",
+                     "# Survey", mode="subagent",
+                     allowed_tools=("read_file",), max_iterations=8)
+        assert "run_skill" in agent.registry
+        assert "[delegated]" in agent.system
+
+    def test_an_overwrite_does_not_duplicate_the_roster_line(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        for i in range(3):
+            skills.write("pr-review",
+                         "Review a git diff for correctness bugs and tests.",
+                         f"# Review v{i}")
+        assert agent.system.count("- pr-review:") == 1
+        assert skills.get("pr-review").body == "# Review v2"
+
+    def test_a_failed_write_leaves_no_temp_files_behind(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        skills.write("pr-review", "Review a git diff for bugs and tests.",
+                     "# v2")
+        folder = tmp_path / "skills" / "pr-review"
+        assert [p.name for p in folder.iterdir()] == [SKILL_FILE]

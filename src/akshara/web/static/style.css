@@ -423,6 +423,30 @@ pre.args, pre.output {
   .actions { order: 3; width: 100%; justify-content: flex-end; }
 }
 
+/* ---- skill editor (inside the skills section) ---- */
+
+#skill-form { display: flex; flex-direction: column; gap: 8px; padding: 10px 0 4px; }
+#skill-form input, #skill-form textarea {
+  width: 100%; box-sizing: border-box; padding: 7px 9px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--card-bg); color: var(--ink);
+  font: inherit; font-size: 13px;
+}
+#skill-form textarea { resize: vertical; font-family: var(--mono, monospace); }
+.skill-mode { display: flex; gap: 16px; font-size: 13px; color: var(--ink-dim); }
+.skill-mode label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+#skill-delegated-only { display: flex; flex-direction: column; gap: 8px; }
+#skill-error {
+  padding: 7px 9px; border-radius: 7px; font-size: 13px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger); white-space: pre-wrap;
+}
+.t-edit {
+  background: none; border: none; cursor: pointer; padding: 0 6px;
+  color: var(--ink-dim); font: inherit; font-size: 12px;
+}
+.t-edit:hover { color: var(--accent); }
+
 /* ---- mcp servers section (inside the tools panel) ---- */
 
 .tools-subhead {

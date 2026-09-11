@@ -717,6 +717,7 @@ async function openToolsPanel() {
   collapseAddForm();
   renderMCPRows(servers);
   $("#skills-section").classList.toggle("hidden", skills === null);
+  closeSkillForm();
   renderSkillRows(skills);
 
   if (!tools) { rows.textContent = "could not load tools"; return; }
@@ -743,8 +744,9 @@ function renderSkillRows(skills) {
   if (!skills) { rows.textContent = ""; return; }
   rows.textContent = "";
   if (!skills.skills.length && !skills.broken.length) {
-    rows.innerHTML = '<div class="mcp-empty">no skills yet — add a '
-      + 'skills/&lt;name&gt;/SKILL.md to this project</div>';
+    rows.innerHTML = '<div class="mcp-empty">no skills yet — press '
+      + '＋ new to write one, or drop a skills/&lt;name&gt;/SKILL.md '
+      + 'into this project</div>';
     return;
   }
   for (const s of skills.skills) rows.append(skillRow(s));
@@ -802,6 +804,13 @@ function skillRow(s) {
     } catch { box.checked = !box.checked; }
     finally { box.disabled = false; }
   };
+  const edit = document.createElement("button");
+  edit.className = "t-edit";
+  edit.textContent = "edit";
+  edit.title = "open this skill in the editor";
+  edit.onclick = () => openSkillForm(s.name);
+  row.append(edit);
+
   // The input is opacity:0 -- .knob IS the visible switch (style.css).
   const knob = document.createElement("span");
   knob.className = "knob";
@@ -809,6 +818,118 @@ function skillRow(s) {
   row.append(sw);
 
   return row;
+}
+
+/* ---- the skill editor ---- */
+
+// Which skill is open, or null for a new one. Also gates the name field:
+// renaming an existing skill would mean moving its folder, so the editor
+// does not pretend to offer it.
+let editingSkill = null;
+
+function skillFormFields() {
+  return {
+    name: $("#skill-name"), desc: $("#skill-desc"), body: $("#skill-body"),
+    tools: $("#skill-tools"), output: $("#skill-output"),
+    iters: $("#skill-iters"), error: $("#skill-error"),
+  };
+}
+
+function skillMode() {
+  const picked = document.querySelector('input[name="skill-mode"]:checked');
+  return picked ? picked.value : "inline";
+}
+
+function syncSkillMode() {
+  $("#skill-delegated-only").classList.toggle("hidden", skillMode() !== "subagent");
+}
+
+for (const radio of document.querySelectorAll('input[name="skill-mode"]')) {
+  radio.onchange = syncSkillMode;
+}
+
+async function openSkillForm(name) {
+  const f = skillFormFields();
+  editingSkill = name || null;
+  f.error.classList.add("hidden");
+  $("#skill-form").classList.remove("hidden");
+  f.name.disabled = Boolean(name);   // renaming = moving a folder; not here
+
+  if (!name) {
+    for (const el of [f.name, f.desc, f.body, f.tools, f.output, f.iters]) {
+      el.value = "";
+    }
+    document.querySelector('input[name="skill-mode"][value="inline"]').checked = true;
+    syncSkillMode();
+    f.name.focus();
+    return;
+  }
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}`);
+    if (!res.ok) return;
+    const s = await res.json();
+    f.name.value = s.name;
+    f.desc.value = s.description;
+    f.body.value = s.body;
+    f.tools.value = (s.allowed_tools || []).join(", ");
+    const mode = s.mode === "subagent" ? "subagent" : "inline";
+    document.querySelector(`input[name="skill-mode"][value="${mode}"]`).checked = true;
+    f.output.value = s.output_format || "";
+    f.iters.value = s.max_iterations || "";
+    syncSkillMode();
+    f.body.focus();
+  } catch { /* leave the form as it was */ }
+}
+
+function closeSkillForm() {
+  $("#skill-form").classList.add("hidden");
+  editingSkill = null;
+}
+
+$("#skill-new-btn").onclick = () => openSkillForm(null);
+$("#skill-cancel").onclick = closeSkillForm;
+
+$("#skill-save").onclick = async () => {
+  const f = skillFormFields();
+  const name = (editingSkill || f.name.value).trim();
+  const btn = $("#skill-save");
+  f.error.classList.add("hidden");
+  if (!name) { showSkillError("a name is required"); return; }
+
+  const payload = {
+    description: f.desc.value,
+    body: f.body.value,
+    mode: skillMode(),
+    allowed_tools: f.tools.value.split(/[,\s]+/).filter(Boolean),
+    output_format: f.output.value,
+    max_iterations: Number(f.iters.value) || 0,
+  };
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      // 422 carries the loader's own message -- the useful one.
+      const detail = await res.json().catch(() => ({}));
+      showSkillError(res.status === 409
+        ? "a turn is running — the roster is part of the prompt, so saving waits"
+        : (detail.detail || `save failed (${res.status})`));
+      return;
+    }
+    closeSkillForm();
+    renderSkillRows(await (await fetch("/api/skills")).json());
+  } catch (e) {
+    showSkillError(String(e));
+  } finally { btn.disabled = false; }
+};
+
+function showSkillError(text) {
+  const box = $("#skill-error");
+  box.textContent = text;
+  box.classList.remove("hidden");
 }
 
 /* ---- mcp servers ---- */

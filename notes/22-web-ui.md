@@ -288,7 +288,44 @@ answering a different question. So `GET /api/skills/{name}` reads
 straight off the registry's discovered copy and never touches the load
 record; only `load_skill` does.
 
-A session started with `--no-skills` answers 400 on all three, and the
+## Writing a skill from the browser
+
+`PUT /api/skills/{name}` creates or updates one, and the panel has the
+form: name, description, instructions, inline-or-delegated, and the
+delegated extras when you pick that mode.
+
+The thing that makes this safe to expose is that it is not a file-write
+endpoint with a skill-shaped name. Three rules:
+
+- **The name is re-validated against the loader's grammar** (lowercase,
+  digits, hyphens). A path segment is all a name can ever be, so
+  `../../etc/passwd` dies at the regex rather than at some later path
+  check that someone will eventually get wrong.
+- **The text is validated by being parsed back.** `render_skill_md`
+  composes the file, `validate_text` runs every rule a hand-written
+  SKILL.md faces, and only then does anything touch disk — so the editor
+  cannot persist a skill that would show up broken in `/skills`. The 422
+  carries the loader's own message, which is the useful one ("description
+  is too thin (11 chars): say what the skill does AND when to use it").
+- **An edit rewrites in place, wherever the skill lives.** Writing an
+  edit of a `~/.akshara/skills` skill into the project root would create
+  a shadowing copy and leave the original behind — two files, one name,
+  and a user wondering why their change did nothing.
+
+The write is atomic (temp + `os.replace`), like the note store: a crash
+mid-save leaves the previous version, never half a file.
+
+One asymmetry worth stating: `GET /api/skills/{name}` returns `mode`,
+`output_format` and `max_iterations` even though the *panel list* does
+not need them. The editor PUTs back exactly what the GET handed it, so a
+field missing from the read is a field silently erased on the next save.
+
+There is deliberately no delete. Removing a file from a web UI is a
+sharper edge than adding one, and the soft answer already exists: switch
+the skill off and it is gone from the model's world without anything
+leaving your disk.
+
+A session started with `--no-skills` answers 400 on all of them, and the
 panel hides the section — the same shape the MCP section already uses
 when no manager is wired.
 

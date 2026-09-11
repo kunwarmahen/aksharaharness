@@ -930,3 +930,64 @@ def test_skills_toggle_validates_its_body(tmp_path):
     assert client.post("/api/skills", json={"name": "pr-review"}).status_code == 400
     assert client.post("/api/skills",
                        json={"name": "ghost", "enabled": False}).status_code == 404
+
+
+def test_writing_a_new_skill_from_the_panel(tmp_path):
+    session, agent = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    res = client.put("/api/skills/release-cut", json={
+        "description": "Cut a tagged release of this project. Use when "
+                       "asked to cut, tag, or publish a release.",
+        "body": "# Cutting a release\n\n1. Check the tree is clean.",
+    })
+    assert res.status_code == 200
+    assert res.json()["path"].endswith("skills/release-cut/SKILL.md")
+    assert (tmp_path / "skills" / "release-cut" / "SKILL.md").is_file()
+    assert "- release-cut:" in agent.system
+
+
+def test_editing_a_skill_keeps_its_delegated_fields(tmp_path):
+    # the editor PUTs back what GET handed it -- a field missing from the
+    # read is a field silently erased on the next save
+    session, _ = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    client.put("/api/skills/file-survey", json={
+        "description": "Survey a directory and report what lives there. "
+                       "Use when asked to explore a folder.",
+        "body": "# Survey\n\n1. list_dir first.",
+        "mode": "subagent", "allowed_tools": ["list_dir", "read_file"],
+        "output_format": "One line per file.", "max_iterations": 8,
+    })
+    body = client.get("/api/skills/file-survey").json()
+    assert body["mode"] == "subagent"
+    assert body["output_format"] == "One line per file."
+    assert body["max_iterations"] == 8
+
+
+def test_a_broken_draft_comes_back_as_the_loaders_own_message(tmp_path):
+    session, _ = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    res = client.put("/api/skills/thin",
+                     json={"description": "does stuff", "body": "# Go"})
+    assert res.status_code == 422
+    assert "too thin" in res.json()["detail"]
+    assert not (tmp_path / "skills" / "thin").exists()
+
+
+def test_a_traversing_name_is_refused(tmp_path):
+    session, _ = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    res = client.put("/api/skills/..%2F..%2Fescape",
+                     json={"description": "A fine description, honestly.",
+                           "body": "# b"})
+    assert res.status_code in (404, 422)
+    assert not (tmp_path.parent / "escape").exists()
+
+
+def test_writing_requires_a_well_formed_body(tmp_path):
+    session, _ = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    assert client.put("/api/skills/x", json={"body": "# b"}).status_code == 400
+    assert client.put("/api/skills/x", json={
+        "description": "A fine description, honestly.", "body": "# b",
+        "allowed_tools": "not-a-list"}).status_code == 400

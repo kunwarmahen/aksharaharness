@@ -247,6 +247,36 @@ mash `y` on the one tool that is definitionally safe. `run_skill` is
 **not** — the child can do whatever its tools can do, and a tool that
 starts an agent must never be auto-approved.
 
+## Writing one from the browser
+
+The web panel has an editor: ＋ new for a blank form, `edit` on any row
+to open what is there. It writes a real `SKILL.md` to
+`skills/<name>/SKILL.md` — the same file you would have written by hand,
+because it goes out through `render_skill_md` and comes back through the
+same parser before anything is saved. A draft that would not load is
+refused with the loader's own message instead of being written and
+breaking the roster later.
+
+Renaming is not offered: a skill's name IS its folder, so a rename is a
+move, and a form that pretends otherwise would leave two copies. Delete
+is not offered either — switching a skill off already removes it from
+the model's world without removing it from your disk.
+
+Verified end to end: a `standup-note` skill written through the portal,
+then, in the same session and without naming it:
+
+```
+> give me a standup: yesterday I finished the skills panel, today the
+  docs, nothing blocking
+
+→ load_skill(name='standup-note')
+Y: Finished the skills panel
+T: The docs
+B: none
+```
+
+Three lines, in the house format, because that is what the file said.
+
 ## Switching skills off
 
 Skills get the same operator switch tools have, for the same reasons:

@@ -105,9 +105,33 @@
       <div class="mcp-head">
         <h4>skills</h4>
         <span class="tools-note">instructions you wrote; the model loads one only when the task matches</span>
+        <button class="m-btn" id="skill-new-btn" title="write a new skill">＋ new</button>
         <button class="m-btn" id="skills-reload" title="re-scan after editing a SKILL.md">rescan</button>
       </div>
       <div id="skills-rows"></div>
+      <div id="skill-form" class="hidden">
+        <input id="skill-name" placeholder="name — lowercase-with-hyphens, e.g. release-cut" spellcheck="false">
+        <textarea id="skill-desc" rows="2"
+          placeholder="description — what it does AND when to use it. This is the only text the model sees every turn, and the only thing that decides whether the skill gets picked."></textarea>
+        <textarea id="skill-body" rows="10"
+          placeholder="# Instructions&#10;&#10;The steps, in the order that actually works. Markdown."></textarea>
+        <div class="skill-mode">
+          <label><input type="radio" name="skill-mode" value="inline" checked> runs inline</label>
+          <label><input type="radio" name="skill-mode" value="subagent"> runs in a scoped sub-agent</label>
+        </div>
+        <input id="skill-tools" placeholder="allowed-tools — comma separated (required for a sub-agent: it gets these and nothing else)" spellcheck="false">
+        <div id="skill-delegated-only" class="hidden">
+          <textarea id="skill-output" rows="2"
+            placeholder="output-format — the exact shape of the answer you want back"></textarea>
+          <input id="skill-iters" type="number" min="1" max="50"
+            placeholder="max-iterations (1–50, optional)">
+        </div>
+        <div id="skill-error" class="hidden"></div>
+        <div class="mcp-actions">
+          <button class="m-btn primary" id="skill-save">save</button>
+          <button class="m-btn" id="skill-cancel">cancel</button>
+        </div>
+      </div>
     </div>
     <div class="tools-subhead">tools</div>
     <div id="tools-rows"></div>

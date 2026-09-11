@@ -34,11 +34,25 @@ with the descriptions moved from every request to one tool result.
 
 from __future__ import annotations
 
+import os
+import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from akshara.prompt import attach_prompt
-from akshara.skills.loader import Skill, SkillSet, discover, load_skill
+from akshara.skills.loader import (
+    NAME_RE,
+    PROJECT_SHARED,
+    SKILL_FILE,
+    Skill,
+    SkillError,
+    SkillSet,
+    discover,
+    load_skill,
+    render_skill_md,
+    validate_text,
+)
 
 #: Above this many skills the roster drops descriptions (see module docstring).
 ROSTER_LIMIT = 25
@@ -327,6 +341,61 @@ class SkillRegistry:
         # run_skill costs a schema only where a delegated skill exists.
         if self.delegated_names() and RunSkill.name not in registry:
             registry.register(RunSkill(self))
+
+    # ---- authoring ------------------------------------------------------------
+
+    def write(self, name: str, description: str, body: str, *,
+              mode: str = "inline", allowed_tools: Iterable[str] = (),
+              output_format: str = "", max_iterations: int = 0) -> Skill:
+        """Create or update a skill on disk, then rescan. Returns the Skill.
+
+        VALIDATE BEFORE WRITING. The composed text is parsed by the same
+        loader a hand-written file goes through, and a failure raises
+        SkillError with nothing touched -- a UI that could persist a
+        broken skill would just be a slower way to break the roster.
+
+        WHERE IT LANDS. An existing skill is rewritten IN PLACE, whatever
+        root it came from, because writing an edit to a different root
+        would silently create a shadowing copy and leave the original
+        behind. A new skill goes to the project's committed ``skills/``,
+        which is where something hand-written belongs.
+
+        The write is atomic (temp + os.replace), so a crash mid-save
+        leaves the previous version rather than half a file -- the same
+        rule the note store follows.
+        """
+        name = (name or "").strip().lower()
+        if not NAME_RE.match(name):
+            raise SkillError(
+                f"invalid name {name!r}: lowercase letters, digits and "
+                f"hyphens only (it doubles as a slash command and a path)")
+
+        text = render_skill_md(
+            name, description, body, mode=mode, allowed_tools=allowed_tools,
+            output_format=output_format, max_iterations=max_iterations)
+
+        existing = self.found.get(name)
+        path = (existing.path if existing is not None
+                else self.cwd.joinpath(*PROJECT_SHARED, name, SKILL_FILE))
+        # Parse it as if it had been read from that path: the folder-name
+        # check and every other rule fire here, not after it is on disk.
+        validate_text(text, path)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+        self.reload()
+        written = self.found.get(name)
+        if written is None:  # pragma: no cover -- validated above
+            raise SkillError(f"wrote {path} but it did not come back")
+        return written
 
     def reload(self) -> SkillSet:
         """Re-scan every root -- ``/skills reload`` after writing one.

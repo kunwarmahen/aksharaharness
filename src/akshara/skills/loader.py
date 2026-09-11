@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -240,7 +241,15 @@ def load_skill(path: Path, *, source: str = "project") -> Skill:
         raise SkillError(f"unreadable: {exc.strerror or exc}") from exc
     except UnicodeDecodeError as exc:
         raise SkillError(f"not UTF-8 text: {exc}") from exc
+    return validate_text(text, path, source=source)
 
+
+def validate_text(text: str, path: Path, *, source: str = "project") -> Skill:
+    """Every rule a SKILL.md must satisfy, applied to text that may not be
+    on disk yet -- which is what lets an editor check a draft BEFORE
+    writing it. ``path`` is still required: identity comes from the folder
+    name, so validation has to know where the text would live.
+    """
     fields, body = parse_frontmatter(text)
     folder = path.parent.name
 
@@ -314,6 +323,56 @@ def load_skill(path: Path, *, source: str = "project") -> Skill:
         output_format=" ".join(fields.get("output_format", "").split()),
         max_iterations=max_iterations,
     )
+
+
+# ---- writing one back -------------------------------------------------------
+
+
+def _fold(key: str, value: str, width: int = 72) -> list[str]:
+    """``key: value`` wrapped onto continuation lines the parser folds back.
+
+    The round trip is the point: what this emits, parse_frontmatter reads
+    as one value again. Continuation lines are indented two spaces, which
+    is what every hand-written skill in this repo looks like.
+    """
+    words, lines, current = value.split(), [], key + ":"
+    for word in words:
+        candidate = f"{current} {word}"
+        if len(candidate) > width and current not in (key + ":", "  "):
+            lines.append(current)
+            current = "  " + word
+        else:
+            current = candidate if current != "  " else "  " + word
+    lines.append(current)
+    return lines
+
+
+def render_skill_md(name: str, description: str, body: str, *,
+                    mode: str = "inline",
+                    allowed_tools: Iterable[str] = (),
+                    output_format: str = "",
+                    max_iterations: int = 0) -> str:
+    """Compose a SKILL.md from fields -- the inverse of the parser.
+
+    Used by hosts that AUTHOR skills rather than only read them (the web
+    panel's editor). Emitting through one function, then validating the
+    result by parsing it back, is what keeps a generated file identical
+    in shape to a hand-written one -- there is no second format that only
+    the UI knows how to produce.
+    """
+    lines = [FENCE, f"name: {name}"]
+    lines += _fold("description", " ".join(description.split()))
+    tools = [t for t in allowed_tools if t]
+    if tools:
+        lines.append("allowed-tools: " + ", ".join(tools))
+    if mode != "inline":
+        lines.append(f"mode: {mode}")
+    if output_format.strip():
+        lines += _fold("output-format", " ".join(output_format.split()))
+    if max_iterations:
+        lines.append(f"max-iterations: {max_iterations}")
+    lines.append(FENCE)
+    return "\n".join(lines) + "\n\n" + body.strip() + "\n"
 
 
 # ---- discovery --------------------------------------------------------------

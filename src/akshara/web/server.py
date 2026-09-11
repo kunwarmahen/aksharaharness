@@ -61,6 +61,7 @@ from akshara.pricing import session_cost
 from akshara.prompt import recompose
 from akshara.providers import get_provider
 from akshara.session import SessionStore, apply_payload
+from akshara.skills.loader import SkillError
 from akshara.types import (
     EndEvent,
     ImageBlock,
@@ -692,7 +693,12 @@ def make_app(session: WebSession, static_dir: Path | None = None,
             raise HTTPException(404, f"no such skill: {name!r}")
         return {"name": skill.name, "description": skill.description,
                 "source": skill.source, "path": str(skill.path),
-                "allowed_tools": list(skill.allowed_tools), "body": skill.body}
+                "allowed_tools": list(skill.allowed_tools), "body": skill.body,
+                # The delegated shape too: the editor PUTs back everything
+                # it was given, so a field missing here is a field silently
+                # erased on the next save.
+                "mode": skill.mode, "output_format": skill.output_format,
+                "max_iterations": skill.max_iterations}
 
     @app.post("/api/skills")
     async def skills_toggle(req: Request) -> dict[str, Any]:
@@ -713,6 +719,50 @@ def make_app(session: WebSession, static_dir: Path | None = None,
         skills.reapply()
         session.broadcast({"type": "state", **session.state()})
         return session.state()
+
+    @app.put("/api/skills/{name}")
+    async def skill_write(name: str, req: Request) -> dict[str, Any]:
+        """Create or update a skill from the panel's editor.
+
+        This is a HUMAN writing a file in their own project, which is the
+        same trust level /api/mcp add already assumes (that one can start
+        an arbitrary process). It is still narrow on purpose: the name is
+        re-validated against the loader's grammar, so nothing here can
+        address a path outside a skills root, and the text is parsed
+        before it is written -- the editor cannot persist a broken skill.
+
+        require_idle for the same reason reload takes it: this rewrites
+        the roster, which is part of the system prompt.
+        """
+        require_ready()
+        require_idle()
+        skills = require_skills()
+        body = await req.json()
+        if not isinstance(body.get("body"), str) or \
+                not isinstance(body.get("description"), str):
+            raise HTTPException(400, "description (str) and body (str) required")
+        tools = body.get("allowed_tools") or []
+        if not isinstance(tools, list) or \
+                not all(isinstance(t, str) for t in tools):
+            raise HTTPException(400, "allowed_tools must be a list of strings")
+        try:
+            skill = skills.write(
+                name,
+                body["description"],
+                body["body"],
+                mode=str(body.get("mode") or "inline"),
+                allowed_tools=tools,
+                output_format=str(body.get("output_format") or ""),
+                max_iterations=int(body.get("max_iterations") or 0),
+            )
+        except SkillError as exc:
+            # The editor's whole job is showing this back to the author.
+            raise HTTPException(422, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, f"could not write skill: {exc}") from exc
+        session.broadcast({"type": "state", **session.state()})
+        return {"name": skill.name, "path": str(skill.path),
+                **session.state()}
 
     @app.post("/api/skills/reload")
     def skills_reload() -> dict[str, Any]:

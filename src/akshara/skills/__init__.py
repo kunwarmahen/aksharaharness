@@ -22,7 +22,9 @@ from akshara.skills.loader import (
     discover,
     load_skill,
     parse_frontmatter,
+    render_skill_md,
     skill_roots,
+    validate_text,
 )
 
 __all__ = [
@@ -37,6 +39,8 @@ __all__ = [
     "load_skill",
     "MIN_DESCRIPTION",
     "parse_frontmatter",
+    "render_skill_md",
+    "validate_text",
     "Skill",
     "SKILL_FILE",
     "SkillError",

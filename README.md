@@ -151,8 +151,9 @@ In the REPL: `/skills` lists them (with what broke and what got loaded),
 pulls one mid-session the way `/tools off` pulls a tool (and
 `$AKSHARA_DISABLED_SKILLS` never loads them at all), `/skills reload`
 re-scans after an edit, and `/new-tool add a count_lines tool` runs one
-directly. The web UI gets a skills section in the tools panel, switches
-included. Full design notes, including why the roster is frozen and what
+directly. The web UI gets a skills section in the tools panel — switches to
+turn one off, and an editor (＋ new, or `edit` on any row) that writes a
+real `SKILL.md` for you, validated by the same loader before it saves. Full design notes, including why the roster is frozen and what
 `allowed-tools` does *not* do: [notes/30](notes/30-skills.md).
 
 ### One-command starts
