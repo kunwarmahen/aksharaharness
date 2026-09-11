@@ -3,51 +3,158 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0b0f" media="(prefers-color-scheme: dark)">
 <title>akshara</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>">
 <link rel="stylesheet" href="/static/style.css">
+<script>
+  /* theme before first paint — no flash of the wrong surface */
+  try {
+    const t = localStorage.getItem("akshara-theme");
+    if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  } catch {}
+</script>
 </head>
 <body>
 
+<!-- one sprite sheet: every icon in the UI is a <use> of one of these -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <g id="i-chevron"><path d="M6 9l6 6 6-6"/></g>
+    <g id="i-sliders"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h8M16 18h4"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="14" cy="18" r="2"/></g>
+    <g id="i-save"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></g>
+    <g id="i-load"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7L10 5H5a2 2 0 0 0-2 2z"/></g>
+    <g id="i-compact"><path d="M4 9h16M4 15h16M9 5l3-2 3 2M9 19l3 2 3-2"/></g>
+    <g id="i-trash"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></g>
+    <g id="i-theme"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2.5 12h2M19.5 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></g>
+    <g id="i-plus"><path d="M12 5v14M5 12h14"/></g>
+    <g id="i-arrow-up"><path d="M12 19V5M6 11l6-6 6 6"/></g>
+    <g id="i-stop"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></g>
+    <g id="i-x"><path d="M6 6l12 12M18 6L6 18"/></g>
+    <g id="i-key"><circle cx="8" cy="15" r="3.6"/><path d="M10.6 12.4L20 3M17 6l2.5 2.5M14.5 8.5L17 11"/></g>
+    <g id="i-pencil"><path d="M4 20h4L20 8a2.8 2.8 0 0 0-4-4L4 16v4z"/></g>
+    <g id="i-refresh"><path d="M20 11a8 8 0 1 0-.6 4"/><path d="M20 5v6h-6"/></g>
+    <g id="i-terminal"><path d="M7 9l3 3-3 3M13 15h4"/><rect x="3" y="4" width="18" height="16" rx="3"/></g>
+    <g id="i-image"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l4.5-4.5L13 17l3-3 4 4"/></g>
+    <g id="i-check"><path d="M5 12.5l4.5 4.5L19 7"/></g>
+  </defs>
+</svg>
+
 <header id="topbar">
-  <div class="brand">akshara<span class="brand-dot">✦</span></div>
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">✦</span>
+    <span class="brand-word">akshara</span>
+  </div>
+
+  <span class="rail-sep" aria-hidden="true"></span>
+
   <div class="chips">
-    <button class="chip" id="chip-provider" title="switch provider (POST /api/provider)">
-      <span class="chip-label" id="provider-name">—</span><span class="caret">▾</span></button>
-    <button class="chip" id="chip-model" title="switch model">
-      <span class="chip-label" id="model-name">—</span><span class="caret">▾</span></button>
+    <div class="chip-group">
+      <button class="chip" id="chip-provider" title="switch provider (POST /api/provider)">
+        <span class="chip-label" id="provider-name">—</span>
+        <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-chevron"/></svg>
+      </button>
+      <button class="chip" id="chip-model" title="switch model">
+        <span class="chip-label" id="model-name">—</span>
+        <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-chevron"/></svg>
+      </button>
+    </div>
+
     <button class="chip" id="chip-mode" title="permission mode — click to flip ask ⇄ yolo (tools run without asking in yolo)">
-      <span class="chip-label" id="mode-label">—</span></button>
+      <span class="chip-key">mode</span><span class="chip-label" id="mode-label">—</span>
+    </button>
+
     <button class="chip" id="chip-env" title="session awareness — click cycles off ⇄ local ⇄ full ('full' adds your city via one public-IP lookup; hover for what the agent knows)">
-      <span class="chip-label" id="env-label">—</span></button>
-    <button class="chip" id="chip-tools" title="servers & tools — add mcp servers, switch anything off/on, even mid-run">
-      ⚙ <span id="tools-count">—</span></button>
+      <span class="chip-key">env</span><span class="chip-label" id="env-label">—</span>
+    </button>
+
+    <button class="chip" id="chip-tools" title="servers &amp; tools — add mcp servers, switch anything off/on, even mid-run">
+      <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-sliders"/></svg>
+      <span id="tools-count">—</span>
+    </button>
+
     <span class="chip chip-static" id="chip-cost" title="session cost — unknown slugs show no figure, never a guess"></span>
+
     <span class="chip chip-static hidden" id="chip-ctxbar">
       <span class="ctxbar"><span class="ctxbar-fill" id="ctx-fill"></span></span>
-      <span id="ctx-pct"></span></span>
+      <span id="ctx-pct"></span>
+    </span>
   </div>
+
+  <span class="rail-sep" aria-hidden="true"></span>
+
   <div class="actions">
-    <button class="ghost" id="btn-save" title="checkpoint session">save</button>
-    <button class="ghost" id="btn-load" title="restore checkpoint">load</button>
-    <button class="ghost" id="btn-compact" title="force context compaction">compact</button>
-    <button class="ghost" id="btn-clear" title="reset history">clear</button>
+    <button class="ghost" id="btn-save" title="checkpoint session">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-save"/></svg>
+      <span class="ghost-label">save</span>
+    </button>
+    <button class="ghost" id="btn-load" title="restore checkpoint">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-load"/></svg>
+      <span class="ghost-label">load</span>
+    </button>
+    <button class="ghost" id="btn-compact" title="force context compaction">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-compact"/></svg>
+      <span class="ghost-label">compact</span>
+    </button>
+    <button class="ghost" id="btn-clear" title="reset history">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-trash"/></svg>
+      <span class="ghost-label">clear</span>
+    </button>
+    <button class="ghost icon-only" id="btn-theme" title="appearance — system, light, dark" aria-label="appearance">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-theme"/></svg>
+    </button>
   </div>
 </header>
 
-<div id="offline" class="hidden">connection lost — reconnecting…</div>
+<div id="offline" class="hidden" role="status">connection lost — reconnecting…</div>
 
-<main id="transcript" aria-live="polite"></main>
+<div id="stage">
+  <main id="transcript" aria-live="polite"></main>
+
+  <div id="empty-state">
+    <div class="empty-mark" aria-hidden="true">✦</div>
+    <div class="empty-title">ready when you are</div>
+    <p class="empty-sub">
+      one agent, one loop, one websocket. Ask for something and every model
+      call, tool call and approval shows up here as it happens.
+    </p>
+    <div class="empty-hints">
+      <span><kbd>↵</kbd> send</span>
+      <span><kbd>⇧</kbd><kbd>↵</kbd> newline</span>
+      <span><kbd>esc</kbd> stop a run</span>
+      <span><kbd>＋</kbd> attach images</span>
+    </div>
+  </div>
+</div>
 
 <div id="composer-wrap">
   <div id="staged" class="hidden"></div>
-  <div id="statusline" class="hidden"><span class="spinner"></span><span id="status-text">connecting…</span></div>
+  <div id="statusline" class="hidden" role="status"><span class="spinner"></span><span id="status-text">connecting…</span></div>
   <div id="composer">
-    <button id="btn-image" title="attach images (png/jpeg/gif/webp ≤5MB)">＋</button>
-    <textarea id="input" rows="1" placeholder="message the agent…  (enter to send, shift+enter for newline)"
+    <button id="btn-image" title="attach images (png/jpeg/gif/webp ≤5MB)" aria-label="attach images">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-image"/></svg>
+    </button>
+    <textarea id="input" rows="1" placeholder="message the agent…  (⏎ to send)"
               autofocus></textarea>
-    <button id="btn-send" title="send">➤</button>
-    <button id="btn-cancel" class="danger hidden" title="stop the current turn (esc)">■ stop</button>
+    <button id="btn-send" title="send" aria-label="send">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-arrow-up"/></svg>
+    </button>
+    <button id="btn-cancel" class="danger hidden" title="stop the current turn (esc)">
+      <svg class="ico-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none"
+           aria-hidden="true"><use href="#i-stop"/></svg>
+      stop
+    </button>
   </div>
   <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.webp" multiple hidden>
 </div>
@@ -57,86 +164,127 @@
   <div id="modal" role="dialog" aria-modal="true"></div>
 </div>
 
+<!-- small prompts and confirms (model slug, checkpoint name, clear history):
+     its own layer so an approval modal can still pop on top -->
+<div id="dialog-backdrop" class="hidden">
+  <div id="dialog" role="dialog" aria-modal="true"></div>
+</div>
+
 <!-- the tools panel: separate overlay so an approval modal can still
      pop on top of it mid-run -->
 <div id="tools-backdrop" class="hidden">
-  <div id="tools-panel" role="dialog" aria-modal="true">
+  <div id="tools-panel" role="dialog" aria-modal="true" aria-labelledby="tools-title">
     <div class="tools-head">
-      <h3>servers, skills &amp; tools</h3>
-      <span class="tools-note">off = never sent to the model, its calls fail as data — applies immediately, even mid-run</span>
-      <button class="m-btn" id="tools-close">close</button>
-    </div>
-    <div id="mcp-section">
-      <div class="mcp-head">
-        <h4>mcp servers</h4>
-        <span class="tools-note">connect new ones or cut them off — their tools come and go with them</span>
-        <button class="m-btn" id="mcp-add-btn" title="connect a new mcp server">＋ add</button>
+      <div>
+        <h3 id="tools-title">servers, skills &amp; tools</h3>
+        <span class="tools-note">off = never sent to the model, its calls fail as data — applies immediately, even mid-run</span>
       </div>
-      <div id="mcp-rows"></div>
-      <div id="mcp-add-form" class="hidden">
-        <div class="mcp-tabs">
-          <button type="button" class="m-tab active" data-mode="fields">fields</button>
-          <button type="button" class="m-tab" data-mode="json">paste json</button>
-        </div>
-        <div id="mcp-fields">
-          <input id="mcp-name" placeholder="name — tools appear as mcp__NAME__…" spellcheck="false">
-          <div class="mcp-transport">
-            <label><input type="radio" name="mcp-transport" value="stdio" checked> runs a command</label>
-            <label><input type="radio" name="mcp-transport" value="http"> talks to a url</label>
+      <button class="ghost icon-only" id="tools-close" title="close" aria-label="close">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+
+    <div id="tools-body">
+      <div id="mcp-section">
+        <div class="section-head">
+          <div>
+            <h4>mcp servers</h4>
+            <span class="tools-note">connect new ones or cut them off — their tools come and go with them</span>
           </div>
-          <input id="mcp-command" placeholder="command + arguments (e.g. python ~/server.py --port 1)" spellcheck="false">
-          <input id="mcp-url" placeholder="http://127.0.0.1:8000/mcp" spellcheck="false" class="hidden">
-          <textarea id="mcp-env" rows="2" placeholder="env vars for the server, one KEY=value per line (optional)"></textarea>
-          <textarea id="mcp-headers" rows="2" class="hidden" spellcheck="false"
-            placeholder="http headers, one Name: value per line (optional) — e.g. Authorization: Bearer ${MY_TOKEN}"></textarea>
+          <div class="section-actions">
+            <button class="m-btn" id="mcp-add-btn" title="connect a new mcp server">
+              <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"
+                   stroke-linecap="round" aria-hidden="true"><use href="#i-plus"/></svg>
+              add
+            </button>
+          </div>
         </div>
-        <div id="mcp-json" class="hidden">
-          <textarea id="mcp-json-text" rows="5" spellcheck="false"
-            placeholder='{"servers": {"tiny": {"command": "python", "args": ["tiny_mcp_server.py"]}}}'></textarea>
-        </div>
-        <label class="mcp-remember"><input type="checkbox" id="mcp-remember" checked>
-          remember — reconnects on future launches</label>
-        <div id="mcp-error" class="hidden"></div>
-        <div class="mcp-actions">
-          <button class="m-btn primary" id="mcp-submit">connect</button>
-          <button class="m-btn" id="mcp-cancel-add">cancel</button>
+        <div id="mcp-rows"></div>
+        <div id="mcp-add-form" class="hidden">
+          <div class="mcp-tabs">
+            <button type="button" class="m-tab active" data-mode="fields">fields</button>
+            <button type="button" class="m-tab" data-mode="json">paste json</button>
+          </div>
+          <div id="mcp-fields">
+            <input id="mcp-name" placeholder="name — tools appear as mcp__NAME__…" spellcheck="false">
+            <div class="mcp-transport">
+              <label><input type="radio" name="mcp-transport" value="stdio" checked> runs a command</label>
+              <label><input type="radio" name="mcp-transport" value="http"> talks to a url</label>
+            </div>
+            <input id="mcp-command" placeholder="command + arguments (e.g. python ~/server.py --port 1)" spellcheck="false">
+            <input id="mcp-url" placeholder="http://127.0.0.1:8000/mcp" spellcheck="false" class="hidden">
+            <textarea id="mcp-env" rows="2" placeholder="env vars for the server, one KEY=value per line (optional)"></textarea>
+            <textarea id="mcp-headers" rows="2" class="hidden" spellcheck="false"
+              placeholder="http headers, one Name: value per line (optional) — e.g. Authorization: Bearer ${MY_TOKEN}"></textarea>
+          </div>
+          <div id="mcp-json" class="hidden">
+            <textarea id="mcp-json-text" rows="5" spellcheck="false"
+              placeholder='{"servers": {"tiny": {"command": "python", "args": ["tiny_mcp_server.py"]}}}'></textarea>
+          </div>
+          <label class="mcp-remember"><input type="checkbox" id="mcp-remember" checked>
+            remember — reconnects on future launches</label>
+          <div id="mcp-error" class="hidden"></div>
+          <div class="mcp-actions">
+            <button class="m-btn primary" id="mcp-submit">connect</button>
+            <button class="m-btn" id="mcp-cancel-add">cancel</button>
+          </div>
         </div>
       </div>
+
+      <div id="skills-section">
+        <div class="section-head">
+          <div>
+            <h4>skills</h4>
+            <span class="tools-note">instructions you wrote; the model loads one only when the task matches</span>
+          </div>
+          <div class="section-actions">
+            <button class="m-btn" id="skill-new-btn" title="write a new skill">
+              <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"
+                   stroke-linecap="round" aria-hidden="true"><use href="#i-plus"/></svg>
+              new
+            </button>
+            <button class="m-btn" id="skills-reload" title="re-scan after editing a SKILL.md">
+              <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#i-refresh"/></svg>
+              rescan
+            </button>
+          </div>
+        </div>
+        <div id="skills-rows"></div>
+        <div id="skill-form" class="hidden">
+          <input id="skill-name" placeholder="name — lowercase-with-hyphens, e.g. release-cut" spellcheck="false">
+          <textarea id="skill-desc" rows="2"
+            placeholder="description — what it does AND when to use it. This is the only text the model sees every turn, and the only thing that decides whether the skill gets picked."></textarea>
+          <textarea id="skill-body" rows="10"
+            placeholder="# Instructions&#10;&#10;The steps, in the order that actually works. Markdown."></textarea>
+          <div class="skill-mode">
+            <label><input type="radio" name="skill-mode" value="inline" checked> runs inline</label>
+            <label><input type="radio" name="skill-mode" value="subagent"> runs in a scoped sub-agent</label>
+          </div>
+          <input id="skill-tools" placeholder="allowed-tools — comma separated (required for a sub-agent: it gets these and nothing else)" spellcheck="false">
+          <div id="skill-delegated-only" class="hidden">
+            <textarea id="skill-output" rows="2"
+              placeholder="output-format — the exact shape of the answer you want back"></textarea>
+            <input id="skill-iters" type="number" min="1" max="50"
+              placeholder="max-iterations (1–50, optional)">
+          </div>
+          <div id="skill-error" class="hidden"></div>
+          <div class="mcp-actions">
+            <button class="m-btn primary" id="skill-save">save</button>
+            <button class="m-btn" id="skill-cancel">cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-head tools-subhead">
+        <div>
+          <h4>tools</h4>
+          <span class="tools-note">everything the model can call this session</span>
+        </div>
+      </div>
+      <div id="tools-rows"></div>
     </div>
-    <div id="skills-section">
-      <div class="mcp-head">
-        <h4>skills</h4>
-        <span class="tools-note">instructions you wrote; the model loads one only when the task matches</span>
-        <button class="m-btn" id="skill-new-btn" title="write a new skill">＋ new</button>
-        <button class="m-btn" id="skills-reload" title="re-scan after editing a SKILL.md">rescan</button>
-      </div>
-      <div id="skills-rows"></div>
-      <div id="skill-form" class="hidden">
-        <input id="skill-name" placeholder="name — lowercase-with-hyphens, e.g. release-cut" spellcheck="false">
-        <textarea id="skill-desc" rows="2"
-          placeholder="description — what it does AND when to use it. This is the only text the model sees every turn, and the only thing that decides whether the skill gets picked."></textarea>
-        <textarea id="skill-body" rows="10"
-          placeholder="# Instructions&#10;&#10;The steps, in the order that actually works. Markdown."></textarea>
-        <div class="skill-mode">
-          <label><input type="radio" name="skill-mode" value="inline" checked> runs inline</label>
-          <label><input type="radio" name="skill-mode" value="subagent"> runs in a scoped sub-agent</label>
-        </div>
-        <input id="skill-tools" placeholder="allowed-tools — comma separated (required for a sub-agent: it gets these and nothing else)" spellcheck="false">
-        <div id="skill-delegated-only" class="hidden">
-          <textarea id="skill-output" rows="2"
-            placeholder="output-format — the exact shape of the answer you want back"></textarea>
-          <input id="skill-iters" type="number" min="1" max="50"
-            placeholder="max-iterations (1–50, optional)">
-        </div>
-        <div id="skill-error" class="hidden"></div>
-        <div class="mcp-actions">
-          <button class="m-btn primary" id="skill-save">save</button>
-          <button class="m-btn" id="skill-cancel">cancel</button>
-        </div>
-      </div>
-    </div>
-    <div class="tools-subhead">tools</div>
-    <div id="tools-rows"></div>
   </div>
 </div>
 

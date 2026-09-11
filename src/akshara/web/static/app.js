@@ -8,6 +8,14 @@
 const $ = (sel) => document.querySelector(sel);
 const transcript = $("#transcript");
 
+/* Every icon in the UI is a <use> of the sprite sheet in index.html --
+   one stroke weight, one grid, currentColor throughout. */
+function icon(name, cls = "ico", stroke = 1.8) {
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor"`
+    + ` stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round"`
+    + ` aria-hidden="true"><use href="#i-${name}"/></svg>`;
+}
+
 const ui = {
   ws: null,
   connected: false,
@@ -223,7 +231,8 @@ function addUserMessage(text, images = 0, replay = false) {
   if (images) {
     const note = document.createElement("div");
     note.className = "imgs";
-    note.textContent = `🖼 ${images} image${images > 1 ? "s" : ""} attached`;
+    note.innerHTML = icon("image", "ico-sm")
+      + `<span>${images} image${images > 1 ? "s" : ""} attached</span>`;
     wrap.append(note);
   }
   transcript.append(wrap);
@@ -303,9 +312,10 @@ function openToolCard(name) {
   forgetAssistant();
   const card = document.createElement("div");
   card.className = "tool-card running";
-  card.innerHTML = `
-    <div class="tool-head"><span class="tool-head">${esc(name)}()</span>
-    <span class="tool-status">running…</span></div>`;
+  card.innerHTML = `<div class="tool-head">`
+    + `<span class="tool-glyph">${icon("terminal", "ico-sm", 1.7)}</span>`
+    + `<span class="tool-name">${esc(name)}()</span>`
+    + `<span class="tool-status">running…</span></div>`;
   transcript.append(card);
   ui.openToolCard = card;
   scrollDown();
@@ -322,7 +332,7 @@ function fillToolCard(env) {
   card.classList.toggle("error", !!env.is_error);
   card.querySelector(".tool-status").textContent =
     env.is_error ? "error" : "ok";
-  card.querySelector(".tool-head span").textContent = `${env.name}()`;
+  card.querySelector(".tool-name").textContent = `${env.name}()`;
 
   const body = document.createElement("div");
   body.className = "tool-body";
@@ -479,7 +489,7 @@ function showAskModal(env) {
     <h3>${esc(env.question)}</h3>
     ${env.context ? `<div class="context-note">${esc(env.context)}</div>` : ""}
     ${rows ? `<div id="choices">${rows}</div>` : ""}
-    <textarea id="ask-text" placeholder="${choices
+    <textarea id="ask-text" placeholder="${choices.length
       ? "or type your own answer…" : "your answer…"}"></textarea>
     <div class="modal-actions">
       <button class="m-btn primary" id="ask-send">send answer</button>
@@ -499,6 +509,154 @@ function showAskModal(env) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commit(); }
   };
 }
+
+/* ---------- small dialogs and menus ----------
+   The browser's prompt()/confirm() are the one place this UI used to fall
+   out of its own skin. Same flows, same payloads -- just rendered here, on
+   their own overlay layer so an approval modal can still land on top. */
+
+let dialogEscape = null;
+
+function closeDialog() {
+  $("#dialog-backdrop").classList.add("hidden");
+  $("#dialog").textContent = "";
+  if (dialogEscape) {
+    document.removeEventListener("keydown", dialogEscape, true);
+    dialogEscape = null;
+  }
+}
+
+/* Resolves to the trimmed string (or `true` for a confirm), or null when
+   the operator backs out -- cancel means cancel. */
+function openDialog({ title, body, value, placeholder,
+                      confirm: confirmText = "ok", tone = "primary",
+                      input: wantsInput = true }) {
+  return new Promise((resolve) => {
+    const box = $("#dialog");
+    box.innerHTML = `<h3>${esc(title)}</h3>`
+      + (body ? `<p class="dialog-body">${esc(body)}</p>` : "")
+      + (wantsInput ? `<input id="dialog-input" spellcheck="false">` : "")
+      + `<div class="modal-actions">`
+      + `<button class="m-btn" data-act="cancel">cancel</button>`
+      + `<button class="m-btn ${tone === "danger" ? "solid-danger" : "primary"}"`
+      + ` data-act="ok">${esc(confirmText)}</button></div>`;
+    $("#dialog-backdrop").classList.remove("hidden");
+
+    const field = $("#dialog-input");
+    if (field) {
+      field.value = value ?? "";
+      if (placeholder) field.placeholder = placeholder;
+      field.focus();
+      field.select();
+    } else {
+      box.querySelector('[data-act="ok"]').focus();
+    }
+
+    const done = (out) => { closeDialog(); resolve(out); };
+    box.onclick = (e) => {
+      const act = e.target.closest("[data-act]")?.dataset.act;
+      if (act === "ok") done(field ? field.value.trim() : true);
+      else if (act === "cancel") done(null);
+    };
+    if (field) {
+      field.onkeydown = (e) => {
+        if (e.key === "Enter") { e.preventDefault(); done(field.value.trim()); }
+      };
+    }
+    // capture phase + stopPropagation: esc closes THIS dialog and must not
+    // also reach the document handler that cancels a running turn.
+    dialogEscape = (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      done(null);
+    };
+    document.addEventListener("keydown", dialogEscape, true);
+    $("#dialog-backdrop").onclick = (e) => {
+      if (e.target === $("#dialog-backdrop")) done(null);
+    };
+  });
+}
+
+const confirmDialog = (opts) => openDialog({ ...opts, input: false });
+
+let menuEscape = null;
+
+function closeMenu() {
+  document.querySelector("#menu-layer")?.remove();
+  if (menuEscape) {
+    document.removeEventListener("keydown", menuEscape, true);
+    menuEscape = null;
+  }
+}
+
+/* A popover anchored under a chip: a fixed roster reads better as a list
+   than as a free-text box you have to spell correctly. */
+function openMenu(anchor, { label, items }) {
+  closeMenu();
+  const layer = document.createElement("div");
+  layer.id = "menu-layer";
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.setAttribute("role", "menu");
+  if (label) {
+    const cap = document.createElement("div");
+    cap.className = "menu-label";
+    cap.textContent = label;
+    menu.append(cap);
+  }
+  for (const item of items) {
+    const b = document.createElement("button");
+    b.className = "menu-item";
+    b.setAttribute("role", "menuitemradio");
+    b.setAttribute("aria-checked", item.checked ? "true" : "false");
+    b.innerHTML = `<span>${esc(item.name)}</span>`
+      + `<span class="tick">${icon("check", "ico-sm", 2.4)}</span>`;
+    b.onclick = () => { closeMenu(); item.onPick(); };
+    menu.append(b);
+  }
+  layer.append(menu);
+  layer.onclick = (e) => { if (e.target === layer) closeMenu(); };
+  document.body.append(layer);
+
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${Math.min(r.bottom + 6,
+    window.innerHeight - menu.offsetHeight - 8)}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.left,
+    window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.querySelector(".menu-item")?.focus();
+
+  menuEscape = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeMenu();
+  };
+  document.addEventListener("keydown", menuEscape, true);
+}
+
+/* ---------- appearance ---------- */
+
+const THEMES = ["system", "light", "dark"];
+
+function currentTheme() {
+  try { return localStorage.getItem("akshara-theme") || "system"; }
+  catch { return "system"; }
+}
+
+function applyTheme(name) {
+  if (name === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = name;
+  try { localStorage.setItem("akshara-theme", name); } catch { /* private mode */ }
+  $("#btn-theme").title = `appearance: ${name} — click to cycle system ⇄ light ⇄ dark`;
+}
+
+$("#btn-theme").onclick = () => {
+  const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+  applyTheme(next);
+  toast(`appearance: ${next}`);
+};
+applyTheme(currentTheme());
 
 /* ---------- composer ---------- */
 
@@ -605,8 +763,15 @@ async function post(path, payload = {}) {
   return data;
 }
 
-$("#chip-model").onclick = () => {
-  const slug = prompt("model slug:", $("#model-name").textContent);
+$("#chip-model").onclick = async () => {
+  const slug = await openDialog({
+    title: "switch model",
+    body: "the slug this provider knows it by — pricing and the context "
+      + "window follow the slug, so an unknown one simply shows no figure.",
+    value: $("#model-name").textContent,
+    placeholder: "model slug",
+    confirm: "switch",
+  });
   if (slug) post("/api/model", { model: slug }).then((s) => s && applyHeader(s));
 };
 // esc stops the run — same as the red button. Deliberately NOT bound while
@@ -640,18 +805,45 @@ $("#chip-env").onclick = () => {
     toast(`env context: ${next}`);
   });
 };
-$("#chip-provider").onclick = () => {
-  const name = prompt(
-    "provider (anthropic | openai | responses | ollama):",
-    $("#provider-name").textContent);
-  if (name) post("/api/provider", { provider: name }).then((s) => s && applyHeader(s));
+const PROVIDERS = ["anthropic", "openai", "responses", "ollama"];
+$("#chip-provider").onclick = (e) => {
+  const live = $("#provider-name").textContent;
+  openMenu(e.currentTarget, {
+    label: "provider",
+    items: PROVIDERS.map((name) => ({
+      name,
+      checked: name === live,
+      // the server resets the model slug to the new provider's default:
+      // slugs are per-provider namespaces
+      onPick: () => post("/api/provider", { provider: name })
+        .then((st) => st && applyHeader(st)),
+    })),
+  });
 };
 $("#btn-save").onclick = async () => {
-  const d = await post("/api/save", { name: prompt("checkpoint name:", "default") || "default" });
+  const name = await openDialog({
+    title: "checkpoint this session",
+    body: "history, model, provider and the tool roster, written to disk "
+      + "under this name. Saving again bumps the version.",
+    value: "default",
+    placeholder: "default",
+    confirm: "save",
+  });
+  if (name === null) return;
+  const d = await post("/api/save", { name: name || "default" });
   if (d) toast(`saved '${d.saved}' v${d.version}`);
 };
 $("#btn-load").onclick = async () => {
-  const d = await post("/api/load", { name: prompt("checkpoint name:", "default") || "default" });
+  const name = await openDialog({
+    title: "restore a checkpoint",
+    body: "replaces the current history and session settings with the "
+      + "saved ones. Anything unsaved here is gone.",
+    value: "default",
+    placeholder: "default",
+    confirm: "restore",
+  });
+  if (name === null) return;
+  const d = await post("/api/load", { name: name || "default" });
   if (d) {
     applyHeader(d);
     transcript.textContent = "";
@@ -671,7 +863,14 @@ $("#btn-compact").onclick = async () => {
   }
 };
 $("#btn-clear").onclick = async () => {
-  if (!confirm("clear conversation history?")) return;
+  const ok = await confirmDialog({
+    title: "clear conversation history?",
+    body: "the transcript and the model's memory of this session both go. "
+      + "Checkpoints already on disk are untouched.",
+    confirm: "clear history",
+    tone: "danger",
+  });
+  if (!ok) return;
   const d = await post("/api/clear");
   if (d) {
     applyHeader(d);
@@ -700,7 +899,7 @@ $("#tools-backdrop").addEventListener("click", (e) => {
 async function openToolsPanel() {
   $("#tools-backdrop").classList.remove("hidden");
   const rows = $("#tools-rows");
-  rows.textContent = "loading…";
+  rows.innerHTML = '<div class="panel-loading">loading…</div>';
 
   let servers = null, tools = null, skills = null;
   try {
@@ -720,7 +919,10 @@ async function openToolsPanel() {
   closeSkillForm();
   renderSkillRows(skills);
 
-  if (!tools) { rows.textContent = "could not load tools"; return; }
+  if (!tools) {
+    rows.innerHTML = '<div class="mcp-empty">could not load tools</div>';
+    return;
+  }
   rows.textContent = "";
   for (const t of tools) rows.append(toolRow(t));
 }
@@ -806,7 +1008,7 @@ function skillRow(s) {
   };
   const edit = document.createElement("button");
   edit.className = "t-edit";
-  edit.textContent = "edit";
+  edit.innerHTML = icon("pencil", "ico-sm", 1.7) + "<span>edit</span>";
   edit.title = "open this skill in the editor";
   edit.onclick = () => openSkillForm(s.name);
   row.append(edit);
@@ -853,6 +1055,7 @@ async function openSkillForm(name) {
   editingSkill = name || null;
   f.error.classList.add("hidden");
   $("#skill-form").classList.remove("hidden");
+  $("#skill-form").scrollIntoView({ block: "nearest" });
   f.name.disabled = Boolean(name);   // renaming = moving a folder; not here
 
   if (!name) {
@@ -990,7 +1193,8 @@ function mcpRow(s) {
   if (s.transport === "http") {
     const auth = document.createElement("button");
     auth.className = "m-btn mcp-login";
-    auth.textContent = "🔑";
+    auth.innerHTML = icon("key", "ico-sm", 1.7);
+    auth.setAttribute("aria-label", `sign in to ${s.name}`);
     auth.title = "sign in to this server (OAuth) — also how you refresh "
       + "an expired login";
     auth.onclick = () => mcpLogin(s.name, s.target, auth);
@@ -999,13 +1203,17 @@ function mcpRow(s) {
 
   const rm = document.createElement("button");
   rm.className = "m-btn danger mcp-remove";
-  rm.textContent = "✕";
+  rm.innerHTML = icon("x", "ico-sm", 2);
   rm.title = "disconnect this server and remove its tools";
+  rm.setAttribute("aria-label", `disconnect ${s.name}`);
   rm.onclick = async () => {
     if (rm.dataset.armed !== "1") {          // two-step confirm: no native dialogs
       rm.dataset.armed = "1";
       rm.textContent = "sure?";
-      setTimeout(() => { rm.dataset.armed = ""; rm.textContent = "✕"; }, 2500);
+      setTimeout(() => {
+        rm.dataset.armed = "";
+        rm.innerHTML = icon("x", "ico-sm", 2);
+      }, 2500);
       return;
     }
     const out = await post("/api/mcp/remove", { name: s.name });
@@ -1032,6 +1240,8 @@ $("#mcp-add-btn").onclick = () => {
   $("#mcp-add-form").classList.remove("hidden");
   $("#mcp-add-btn").classList.add("hidden");
   $("#mcp-error").classList.add("hidden");
+  $("#mcp-add-form").scrollIntoView({ block: "nearest" });
+  $("#mcp-name").focus();
 };
 $("#mcp-cancel-add").onclick = collapseAddForm;
 document.querySelectorAll(".m-tab").forEach((tab) => {
@@ -1149,7 +1359,7 @@ $("#mcp-submit").onclick = async () => {
 // the machine running the server, so the button goes quiet for as long as
 // that takes and reports whichever way it lands.
 async function mcpLogin(name, url, button) {
-  const label = button.textContent;
+  const label = button.innerHTML;
   button.disabled = true;
   button.textContent = "waiting for the browser…";
   try {
@@ -1168,7 +1378,7 @@ async function mcpLogin(name, url, button) {
     if (out.authorize_url) window.open(out.authorize_url, "_blank");
   } finally {
     button.disabled = false;
-    button.textContent = label;
+    button.innerHTML = label;
   }
 }
 
@@ -1213,20 +1423,15 @@ function closeToolsPanel() {
 
 let toastTimer = null;
 function toast(msg) {
-  let el = $("#toast");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "toast";
-    el.style.cssText =
-      "position:fixed;bottom:74px;right:18px;background:var(--bg-raised);" +
-      "border:1px solid var(--line);border-radius:8px;padding:8px 14px;" +
-      "font-size:13.5px;box-shadow:0 4px 14px rgba(0,0,0,.12);z-index:99;";
-    document.body.append(el);
-  }
+  // rebuilt rather than reused, so a second toast replays its entrance
+  $("#toast")?.remove();
+  const el = document.createElement("div");
+  el.id = "toast";
+  el.setAttribute("role", "status");
   el.textContent = msg;
-  el.classList.remove("hidden");
+  document.body.append(el);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.remove(), 3200);
+  toastTimer = setTimeout(() => el.remove(), 3400);
 }
 
 function esc(s) {
@@ -1234,5 +1439,15 @@ function esc(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
+
+/* The welcome surface is a sibling of the transcript (which gets wiped
+   wholesale on reconnect, load and clear), so one observer keeps it honest
+   rather than a call at every append site. */
+const emptyState = $("#empty-state");
+function syncEmptyState() {
+  emptyState.classList.toggle("hidden", transcript.childElementCount > 0);
+}
+new MutationObserver(syncEmptyState).observe(transcript, { childList: true });
+syncEmptyState();
 
 connect();

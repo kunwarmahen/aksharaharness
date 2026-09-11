@@ -382,8 +382,11 @@ paste-JSON, per-server switches, remove; same powers as `/mcp`
 mid-session, and remembered servers auto-reconnect on future launches,
 a live context-pressure meter (amber at 60%, red at 80% — where
 auto-compaction starts caring), and a ■ Stop button that lands
-mid-sentence, not just between tool calls (Esc works too). Install the
-extra once: `uv sync --extra web`.
+mid-sentence, not just between tool calls (Esc works too). The whole
+surface runs on one token-driven design system — light and dark from
+your OS or from the appearance button, in-page dialogs rather than the
+browser's own, and a layout that reflows to one column on a phone.
+Install the extra once: `uv sync --extra web`.
 
 ```bash
 uv run akshara --provider ollama --web      # local model + browser UI

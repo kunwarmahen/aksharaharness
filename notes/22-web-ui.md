@@ -128,7 +128,7 @@ along. The top-bar mode chip shows the permission mode — red while
 yolo — and clicking it flips; the env chip beside it shows the session-
 awareness level and cycles off ⇄ local ⇄ full on click (its tooltip
 carries the exact fact sheet the model sees,
-[29-environment-awareness.md](29-environment-awareness.md)); the ⚙
+[29-environment-awareness.md](29-environment-awareness.md)); the
 servers & tools chip opens a panel holding both halves: the MCP rows first (health dot, transport
 badge, `saved` tag, per-server switch, a two-step remove button whose
 first click arms "sure?" instead of trusting a native dialog), then
@@ -332,6 +332,50 @@ leaving your disk.
 A session started with `--no-skills` answers 400 on all of them, and the
 panel hides the section — the same shape the MCP section already uses
 when no manager is wired.
+
+## The surface itself: one design system
+
+The panel, the transcript and the composer are not styled one at a
+time. `static/style.css` opens with a token block — surfaces, hairlines,
+three ink levels, one accent, three semantic colours, four elevations, a
+six-step radius ladder, two easings — and every rule after it spends
+those tokens and nothing else. Dark mode is the same system with swapped
+values, written twice on purpose: once under `prefers-color-scheme` for
+the OS default, once under `:root[data-theme="dark"]` for an explicit
+pick, so neither depends on the other resolving first. The appearance
+button in the header cycles system ⇄ light ⇄ dark and remembers the
+choice in `localStorage`; a tiny inline script in `<head>` applies it
+before first paint, so a reload never flashes the wrong surface.
+
+Three decisions carried most of the weight:
+
+* **The browser's `prompt()` and `confirm()` are gone.** Switching a
+  model, naming a checkpoint and clearing history all used native
+  dialogs — the one place the app fell out of its own skin, and on some
+  platforms a modal that blocks the whole tab. They are now in-page
+  dialogs on their own overlay layer (z-index 45), between the tools
+  panel (40) and the approval modal (50), so an approval can still land
+  on top of one mid-run. Escape closes them in the capture phase and
+  stops there, deliberately: it must not also reach the document
+  handler that cancels a running turn. Cancel now means cancel, too —
+  dismissing the save prompt used to fall through to saving `default`.
+* **The provider chip is a menu, not a text box.** The roster is fixed
+  (`anthropic | openai | responses | ollama`), and a fixed roster reads
+  better as four rows with a tick beside the live one than as a box you
+  have to spell correctly.
+* **Icons come from one sprite.** A `<defs>` block at the top of
+  `index.html` holds every glyph; each use is a `<use href="#i-…">` on a
+  24-grid with `currentColor`, so an icon inherits whatever state its
+  button is in. No emoji in the chrome, and no icon font to ship.
+
+Everything states itself the same way it did before — a disabled tool
+still strikes through its own name, yolo still turns its chip red,
+health dots still mean health. What changed is that the transcript now
+has an empty state instead of a blank page, forms scroll themselves into
+view when they open, focus is visible on every control, and the whole
+thing reflows to one column on a phone, where the panel and the modals
+become bottom sheets. `prefers-reduced-motion` switches every animation
+off.
 
 ## What the tests pin
 

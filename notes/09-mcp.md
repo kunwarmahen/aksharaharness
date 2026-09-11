@@ -203,9 +203,10 @@ cd <this repo>                      # the cwd matters; see the traps below
 uv run akshara --web --provider ollama
 ```
 
-Open `http://localhost:8321` and click the **⚙ chip** in the top bar
-(it shows the live tool count). That opens **servers, skills & tools**,
-with the **mcp servers** section first. Click **＋ add**:
+Open `http://localhost:8321` and click the **tools chip** in the top
+bar -- the sliders icon with the live tool count beside it. That opens
+**servers, skills & tools**, with the **mcp servers** section first.
+Click **＋ add**:
 
 * **name** `tiny` -- the tools will register as `mcp__tiny__…`
 * **transport** leave *runs a command* selected (stdio is the default)
@@ -214,7 +215,7 @@ with the **mcp servers** section first. Click **＋ add**:
 * untick **remember** for a throwaway (it is ticked by default)
 
 **connect** adds a row: a green dot, a `stdio` badge, `2 tool(s)`, and
-the ⚙ count climbs by two. Now ask for it in the chat box:
+the tools chip's count climbs by two. Now ask for it in the chat box:
 
 > Use the mcp__tiny__add tool to add 19 and 23. Report only the number.
 
