@@ -911,3 +911,22 @@ def test_skills_endpoints_400_when_skills_are_off():
     client = TestClient(make_app(session))
     assert client.get("/api/skills").status_code == 400
     assert client.post("/api/skills/reload").status_code == 400
+
+
+def test_skills_toggle_pulls_one_from_the_roster(tmp_path):
+    session, agent = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    state = client.post("/api/skills",
+                        json={"name": "pr-review", "enabled": False}).json()
+    assert state["skills"]["disabled"] == ["pr-review"]
+    assert agent.system is None          # the layer went with it
+    client.post("/api/skills", json={"name": "pr-review", "enabled": True})
+    assert "- pr-review:" in agent.system
+
+
+def test_skills_toggle_validates_its_body(tmp_path):
+    session, _ = make_skill_session(tmp_path)
+    client = TestClient(make_app(session))
+    assert client.post("/api/skills", json={"name": "pr-review"}).status_code == 400
+    assert client.post("/api/skills",
+                       json={"name": "ghost", "enabled": False}).status_code == 404

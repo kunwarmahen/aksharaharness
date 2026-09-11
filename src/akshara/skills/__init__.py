@@ -11,7 +11,7 @@ from akshara.skills.registry import (
     SkillRegistry,
     enable_skills,
 )
-from akshara.skills.tools import ListSkills, LoadSkill
+from akshara.skills.tools import ListSkills, LoadSkill, RunSkill
 from akshara.skills.loader import (
     MIN_DESCRIPTION,
     SKILL_FILE,
@@ -30,6 +30,7 @@ __all__ = [
     "enable_skills",
     "ListSkills",
     "LoadSkill",
+    "RunSkill",
     "ROSTER_LIMIT",
     "SkillRegistry",
     "discover",

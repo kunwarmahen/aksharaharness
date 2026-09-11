@@ -285,9 +285,16 @@ face is four commands, and the last one is the one people actually use:
 ```
 /skills                     # what is on disk: source, loaded-this-session, broken
 /skills NAME                # print one — reading your own file costs no model turn
+/skills off|on NAME|GLOB    # pull or restore one, the /tools switch for skills
 /skills reload              # re-scan after writing or editing one
 /NAME <task>                # run a skill directly: /new-tool add a count_lines tool
 ```
+
+`/skills off` shares `/tools off`'s matching rule (globs), its soft
+semantics (the skill stays on disk, marked `[off]`, and refuses to load
+until restored) and its startup twin (`$AKSHARA_DISABLED_SKILLS`). It
+differs in one way worth knowing: pulling a skill rewrites the system
+prompt, so it costs the cached prefix. Pulling a tool does not.
 
 Three details worth the ink:
 
@@ -302,6 +309,12 @@ muscle memory for.
 written by a human, and rich would happily interpret `[dim]` in it as
 styling — or crash on an unclosed bracket. Same rule as `/env`'s panel
 (hostnames and paths are user data too).
+
+**`/NAME` refuses a delegated skill.** A skill declaring `mode: subagent`
+exists precisely to run fenced, with only the tools it names; typing
+`/repo-survey` must not smuggle its body into the main conversation
+instead. The REPL says so and points you at asking for it in plain words,
+which lets the model reach for `run_skill`.
 
 **`/NAME` prepends the body to your words rather than doing anything
 clever.** The model gets one message saying what to do and what to do it

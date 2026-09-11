@@ -416,9 +416,17 @@ container_start() {
             ;;
     esac
 
+    # Skills are project source, not machine state: the image ships the
+    # repo's own set, and THIS project's ride in on a read-only mount so
+    # editing one doesn't mean rebuilding an image.
+    local skill_args=()
+    if [[ -d skills ]]; then
+        skill_args=(-v "$(pwd)/skills:/app/skills:ro")
+    fi
+
     # 8321 is fixed inside the image; publish it wherever we like.
     id="$("$eng" container run -d --name "$CONTAINER_ID" \
-         -p "${port:-8321}:8321" "${env_args[@]}" \
+         -p "${port:-8321}:8321" "${env_args[@]}" "${skill_args[@]}" \
          "$CONTAINER_NAME" --web --host 0.0.0.0 "${cmd_args[@]}" "$@")" || {
         echo "container run failed (output above)." >&2
         "$eng" container rm -f "$CONTAINER_ID" 2>/dev/null || true
@@ -568,6 +576,13 @@ Anything after a preset or command passes through to akshara:
   ./start.sh cloud --resume          restore the newest checkpoint
   ./start.sh local --model qwen3.8   any tag you have pulled
   ./start.sh web-start --port 9000   different port for the UI
+  ./start.sh local --no-skills       ignore the skills/ folder this run
+  ./start.sh cloud --skills-dir DIR  load skills from somewhere else too
+
+Skills are procedures you write down once (a folder + SKILL.md) and the
+agent loads only when the work calls for them. Drop them in ./skills and
+every road above picks them up — terminal, browser, and the container.
+Inside a session: /skills lists them, /skills off NAME pulls one.
 
 Keys and models come from .env — edit it to change them, or override on
 the command line like any akshara flag.

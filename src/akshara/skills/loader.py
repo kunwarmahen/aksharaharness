@@ -42,6 +42,14 @@ gets picked, because selection is retrieval over exactly that text. So
 a thin description is an ERROR, reported by name at startup, not a
 quiet degradation the operator discovers three sessions later.
 
+TWO MODES. By default a skill is INLINE: its body comes back as a tool
+result and the model follows it in the current conversation, with the
+current tools. A skill may instead declare ``mode: subagent``, and then
+its ``allowed-tools`` stop being a note and become a FENCE -- the body
+runs in a fresh child agent that physically has no other tools
+registered (see subagent.py). That is the only enforcement the harness
+can honestly offer, and it costs a fresh context window to get.
+
 Broken skills never raise into the session. discover() returns them in
 a parallel ``broken`` list so ``/skills`` can show the file and the
 reason -- one bad folder must not cost you the other nine.
@@ -65,6 +73,15 @@ FENCE = "---"
 #: which is the half that actually drives selection. The number is a
 #: floor against `description: reviews code`, not a style guide.
 MIN_DESCRIPTION = 20
+
+#: How a skill runs. ``inline`` hands the body to the current
+#: conversation; ``subagent`` runs it in a scoped child (see the module
+#: docstring). Shared by the loader, the registry and the tools.
+MODES = ("inline", "subagent")
+
+#: Iteration cap a delegated skill may ask for -- the sub-agent spawner's
+#: own ceiling, restated here so a bad number fails at AUTHORING time.
+MAX_ITERATIONS_RANGE = (1, 50)
 
 #: Folder/name grammar. Lowercase and hyphenated so a name is safe as a
 #: slash command (/pr-review), a path segment, and a BM25 token at once.
@@ -98,15 +115,29 @@ class Skill:
     path: Path                              # the SKILL.md itself
     source: str = "project"                 # which root it came from
     allowed_tools: tuple[str, ...] = ()
+    mode: str = "inline"                    # inline | subagent
+    output_format: str = ""                 # subagent mode: shape of the answer
+    max_iterations: int = 0                 # subagent mode: 0 = spawner default
 
     @property
     def directory(self) -> Path:
         """The skill's folder -- the anchor for every bundled file."""
         return self.path.parent
 
+    @property
+    def delegated(self) -> bool:
+        """True when this skill runs in a scoped sub-agent, not inline."""
+        return self.mode == "subagent"
+
     def roster_line(self) -> str:
-        """The tier-1 cost: one line in the system prompt, per session."""
-        return f"- {self.name}: {self.description}"
+        """The tier-1 cost: one line in the system prompt, per session.
+
+        A delegated skill is MARKED, because the model has to reach for a
+        different tool to use it -- an unmarked roster would promise
+        load_skill for something load_skill deliberately refuses.
+        """
+        mark = " [delegated]" if self.delegated else ""
+        return f"- {self.name}{mark}: {self.description}"
 
 
 @dataclass(slots=True, frozen=True)
@@ -235,13 +266,53 @@ def load_skill(path: Path, *, source: str = "project") -> Skill:
     if not body:
         raise SkillError("no instructions below the frontmatter")
 
+    mode = (fields.get("mode", "") or "inline").strip().lower()
+    if mode not in MODES:
+        raise SkillError(
+            f"unknown mode {mode!r}: expected {' or '.join(MODES)}")
+    allowed_tools = _split_list(fields.get("allowed_tools", ""))
+    low, high = MAX_ITERATIONS_RANGE
+    max_iterations = 0
+    if raw := fields.get("max_iterations", "").strip():
+        try:
+            max_iterations = int(raw)
+        except ValueError:
+            raise SkillError(
+                f"max-iterations must be a whole number, got {raw!r}") from None
+        if not low <= max_iterations <= high:
+            raise SkillError(
+                f"max-iterations must be between {low} and {high}, "
+                f"got {max_iterations}")
+
+    if mode == "subagent":
+        # The whole point of this mode is the fence; without a tool list
+        # there is nothing to fence, and a child with no tools cannot work.
+        if not allowed_tools:
+            raise SkillError(
+                "mode: subagent requires allowed-tools -- the child agent "
+                "gets EXACTLY those and nothing else, so an empty list "
+                "fences off everything")
+        if "spawn_subagent" in allowed_tools:
+            # one level deep; the spawner refuses this at runtime too, but
+            # an author should hear it now rather than mid-task
+            raise SkillError(
+                "a delegated skill cannot list 'spawn_subagent': "
+                "sub-agents do not spawn sub-agents")
+    elif fields.get("output_format") or max_iterations:
+        raise SkillError(
+            "output-format and max-iterations only mean something with "
+            "mode: subagent -- an inline skill's answer is just the turn")
+
     return Skill(
         name=name,
         description=description,
         body=body,
         path=path,
         source=source,
-        allowed_tools=_split_list(fields.get("allowed_tools", "")),
+        allowed_tools=allowed_tools,
+        mode=mode,
+        output_format=" ".join(fields.get("output_format", "").split()),
+        max_iterations=max_iterations,
     )
 
 

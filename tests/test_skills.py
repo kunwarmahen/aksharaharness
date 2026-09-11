@@ -370,3 +370,297 @@ class TestDescribe:
         write_skill(tmp_path / "skills", "pr-review")
         skills = SkillRegistry(cwd=tmp_path, home=tmp_path / "home")
         assert skills.missing_tools(skills.get("pr-review")) == []
+
+
+# ---- mode: subagent -- where allowed-tools becomes a fence -----------------
+
+
+DELEGATED = """\
+---
+name: repo-survey
+description: Survey part of this codebase and report what is there. Use
+  when asked to explore or map out an unfamiliar area of the code.
+mode: subagent
+allowed-tools: read_file, glob
+output-format: A short report, files with one line each.
+max-iterations: 12
+---
+
+# Surveying
+
+1. glob for the obvious names.
+"""
+
+
+class TestDelegatedFormat:
+    def test_mode_and_its_extras_round_trip(self, tmp_path):
+        skill = load_skill(write_skill(tmp_path, "repo-survey", DELEGATED))
+        assert skill.delegated
+        assert skill.allowed_tools == ("read_file", "glob")
+        assert skill.output_format.startswith("A short report")
+        assert skill.max_iterations == 12
+
+    def test_inline_is_the_default(self, tmp_path):
+        assert load_skill(write_skill(tmp_path, "pr-review")).mode == "inline"
+
+    def test_the_roster_line_marks_a_delegated_skill(self, tmp_path):
+        # an unmarked roster would promise load_skill for something
+        # load_skill deliberately refuses
+        skill = load_skill(write_skill(tmp_path, "repo-survey", DELEGATED))
+        assert skill.roster_line().startswith("- repo-survey [delegated]:")
+
+    def test_unknown_mode_is_an_error(self, tmp_path):
+        path = write_skill(tmp_path, "repo-survey",
+                           DELEGATED.replace("mode: subagent", "mode: yolo"))
+        with pytest.raises(SkillError, match="unknown mode"):
+            load_skill(path)
+
+    def test_delegation_without_a_tool_list_is_an_error(self, tmp_path):
+        # nothing to fence, and a child with no tools cannot work
+        path = write_skill(tmp_path, "repo-survey",
+                           DELEGATED.replace("allowed-tools: read_file, glob\n", ""))
+        with pytest.raises(SkillError, match="requires allowed-tools"):
+            load_skill(path)
+
+    def test_a_delegated_skill_cannot_list_spawn_subagent(self, tmp_path):
+        path = write_skill(tmp_path, "repo-survey",
+                           DELEGATED.replace("read_file, glob",
+                                             "read_file, spawn_subagent"))
+        with pytest.raises(SkillError, match="do not spawn sub-agents"):
+            load_skill(path)
+
+    def test_subagent_only_keys_are_rejected_on_an_inline_skill(self, tmp_path):
+        path = write_skill(tmp_path, "pr-review",
+                           GOOD.replace("allowed-tools: bash, read_file, grep",
+                                        "max-iterations: 9"))
+        with pytest.raises(SkillError, match="only mean something"):
+            load_skill(path)
+
+    def test_a_junk_iteration_cap_fails_at_authoring_time(self, tmp_path):
+        path = write_skill(tmp_path, "repo-survey",
+                           DELEGATED.replace("max-iterations: 12",
+                                             "max-iterations: 500"))
+        with pytest.raises(SkillError, match="between 1 and 50"):
+            load_skill(path)
+
+
+class RecordingSpawner:
+    """Stands in for SubagentSpawner: records the call, returns a result."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def spawn(self, args):
+        self.calls.append(args)
+        return SimpleNamespace(summary="surveyed", iterations_used=2,
+                               tool_calls_made=3, input_tokens=10,
+                               output_tokens=4, error=None)
+
+
+def _delegated_agent(tmp_path, *, tools=("read_file", "glob")):
+    """An agent with one delegated skill and a recording spawner."""
+    from akshara.tools.fs import ReadFile
+    from akshara.tools.glob import Glob
+
+    write_skill(tmp_path / "skills", "repo-survey", DELEGATED)
+    agent = _agent()
+    for tool in (ReadFile(), Glob()):
+        if tool.name in tools:
+            agent.registry.register(tool)
+    skills = enable_skills(agent, tmp_path, home=tmp_path / "home")
+    agent.subagents = RecordingSpawner()
+    return agent, skills
+
+
+class TestDelegation:
+    def test_run_skill_registers_only_where_one_is_delegated(self, tmp_path):
+        agent, _ = _delegated_agent(tmp_path)
+        assert "run_skill" in agent.registry
+        plain = _agent()
+        write_skill(tmp_path / "inline-only" / "skills", "pr-review")
+        enable_skills(plain, tmp_path / "inline-only", home=tmp_path / "home")
+        assert "run_skill" not in plain.registry
+
+    def test_the_roster_tells_the_model_which_tool_to_reach_for(self, tmp_path):
+        agent, _ = _delegated_agent(tmp_path)
+        assert "[delegated]" in agent.system
+        assert "use run_skill" in agent.system
+
+    def test_run_skill_passes_the_body_task_and_fence_to_the_spawner(self, tmp_path):
+        agent, _ = _delegated_agent(tmp_path)
+        out = agent.registry.get("run_skill").run(
+            {"name": "repo-survey", "task": "map the providers"}, None)
+        call = agent.subagents.calls[0]
+        assert "# Surveying" in call["objective"]
+        assert "Task: map the providers" in call["objective"]
+        assert call["tools_allowed"] == ["read_file", "glob"]
+        assert call["max_iterations"] == 12
+        assert call["output_format"].startswith("A short report")
+        assert "surveyed" in out and "sub-agent" in out
+
+    def test_run_skill_is_not_read_only(self, tmp_path):
+        # the child can do whatever its tools can do -- never auto-approve
+        agent, _ = _delegated_agent(tmp_path)
+        assert agent.registry.get("run_skill").read_only is False
+
+    def test_load_skill_refuses_a_delegated_skill(self, tmp_path):
+        # handing the body over inline would quietly undo the fence
+        agent, _ = _delegated_agent(tmp_path)
+        with pytest.raises(ToolError, match="run_skill"):
+            agent.registry.get("load_skill").run({"name": "repo-survey"}, None)
+
+    def test_run_skill_refuses_an_inline_skill(self, tmp_path):
+        agent, _ = _delegated_agent(tmp_path)
+        write_skill(tmp_path / "skills", "pr-review")
+        agent.skills.reload()
+        with pytest.raises(ToolError, match="runs inline"):
+            agent.registry.get("run_skill").run(
+                {"name": "pr-review", "task": "x"}, None)
+
+    def test_tools_this_session_lacks_are_dropped_and_named(self, tmp_path):
+        # the spawner refuses the whole run over one unknown name, and a
+        # child planning around a missing tool wastes its window
+        agent, _ = _delegated_agent(tmp_path, tools=("read_file",))
+        agent.registry.get("run_skill").run(
+            {"name": "repo-survey", "task": "map it"}, None)
+        call = agent.subagents.calls[0]
+        assert call["tools_allowed"] == ["read_file"]
+        assert "glob" in call["objective"]
+        assert "NOT available" in call["objective"]
+
+    def test_a_skill_whose_tools_are_all_missing_says_so(self, tmp_path):
+        agent, _ = _delegated_agent(tmp_path, tools=())
+        with pytest.raises(ToolError, match="cannot run here"):
+            agent.registry.get("run_skill").run(
+                {"name": "repo-survey", "task": "map it"}, None)
+
+    def test_an_empty_task_is_refused(self, tmp_path):
+        agent, _ = _delegated_agent(tmp_path)
+        with pytest.raises(ToolError, match="only context"):
+            agent.registry.get("run_skill").run(
+                {"name": "repo-survey", "task": "  "}, None)
+
+    def test_running_one_counts_as_loaded(self, tmp_path):
+        agent, skills = _delegated_agent(tmp_path)
+        agent.registry.get("run_skill").run(
+            {"name": "repo-survey", "task": "map it"}, None)
+        assert skills.loaded == ["repo-survey"]
+
+    def test_the_subagent_budget_is_shared_not_doubled(self, tmp_path):
+        # a delegated skill IS a sub-agent; two counters would let the pair
+        # spend twice what the operator allowed
+        from akshara.agent import Agent
+        from akshara.subagent import SubagentSpawner
+
+        write_skill(tmp_path / "skills", "repo-survey", DELEGATED)
+        agent = Agent(None, model="m")
+        existing = SubagentSpawner(agent)
+        agent.subagents = existing
+        skills = enable_skills(agent, tmp_path, home=tmp_path / "home")
+        assert skills.spawner() is existing
+
+    def test_a_spawner_is_created_on_demand_without_subagents_flag(self, tmp_path):
+        from akshara.agent import Agent
+        from akshara.subagent import SubagentSpawner
+
+        write_skill(tmp_path / "skills", "repo-survey", DELEGATED)
+        agent = Agent(None, model="m")
+        skills = enable_skills(agent, tmp_path, home=tmp_path / "home")
+        assert isinstance(skills.spawner(), SubagentSpawner)
+        assert skills.spawner() is agent.subagents   # cached, not rebuilt
+
+
+# ---- the operator's switch: /skills off|on, $AKSHARA_DISABLED_SKILLS -------
+
+
+class TestDisabling:
+    def test_a_disabled_skill_leaves_the_roster(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review", "release-cut")
+        assert skills.disable("release-cut") is True
+        skills.reapply()
+        assert "- pr-review:" in agent.system
+        assert "release-cut" not in agent.system
+
+    def test_disabling_every_skill_drops_the_layer_entirely(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        skills.disable("pr-review")
+        skills.reapply()
+        assert agent.system is None
+
+    def test_it_stays_discovered_so_the_operator_can_see_it(self, tmp_path):
+        # the soft switch, not a delete: /skills still lists it, marked off
+        _, skills = _wire(tmp_path, "pr-review")
+        skills.disable("pr-review")
+        assert skills.names() == ["pr-review"]
+        assert skills.disabled_names() == ["pr-review"]
+        assert skills.describe()["skills"][0]["enabled"] is False
+
+    def test_loading_a_disabled_skill_is_data_not_a_crash(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        skills.disable("pr-review")
+        with pytest.raises(ToolError, match="disabled by the operator"):
+            agent.registry.get("load_skill").run({"name": "pr-review"}, None)
+
+    def test_running_a_disabled_delegated_skill_is_refused(self, tmp_path):
+        agent, skills = _delegated_agent(tmp_path)
+        skills.disable("repo-survey")
+        with pytest.raises(ToolError, match="disabled by the operator"):
+            agent.registry.get("run_skill").run(
+                {"name": "repo-survey", "task": "map it"}, None)
+
+    def test_suggestions_never_point_at_a_disabled_skill(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        skills.disable("pr-review")
+        with pytest.raises(ToolError) as exc:
+            agent.registry.get("load_skill").run({"name": "pr-revie"}, None)
+        assert "Did you mean" not in str(exc.value)
+
+    def test_enable_restores_it_to_the_roster(self, tmp_path):
+        agent, skills = _wire(tmp_path, "pr-review")
+        skills.disable("pr-review")
+        skills.enable("pr-review")
+        skills.reapply()
+        assert "- pr-review:" in agent.system
+
+    def test_unknown_names_report_false_rather_than_inventing_one(self, tmp_path):
+        _, skills = _wire(tmp_path, "pr-review")
+        assert skills.disable("ghost") is False
+        assert skills.enable("ghost") is False
+        assert skills.disabled_names() == []
+
+    def test_a_disable_survives_a_rescan(self, tmp_path):
+        # the operator pulled that NAME, not that file
+        _, skills = _wire(tmp_path, "pr-review")
+        skills.disable("pr-review")
+        skills.reload()
+        assert skills.disabled_names() == ["pr-review"]
+
+    def test_a_deleted_skill_stops_being_disabled_and_absent(self, tmp_path):
+        _, skills = _wire(tmp_path, "pr-review")
+        skills.disable("pr-review")
+        (tmp_path / "skills" / "pr-review" / SKILL_FILE).unlink()
+        skills.reload()
+        assert skills.disabled_names() == []
+
+    def test_list_skills_hides_what_the_operator_pulled(self, tmp_path):
+        agent, skills = _wire(tmp_path, *(f"skill-{i:02d}" for i in range(4)))
+        skills.roster_limit = 3
+        skills._register_tools(agent)
+        skills.disable("skill-00")
+        out = agent.registry.get("list_skills").run({}, None)
+        assert "skill-00" not in out
+        assert "skill-01" in out
+
+
+class TestDisabledPatterns:
+    def test_globs_come_off_the_environment(self, monkeypatch):
+        from akshara import config
+
+        monkeypatch.setenv("AKSHARA_DISABLED_SKILLS", "deploy-*, pr-review")
+        assert config.disabled_skill_patterns() == ["deploy-*", "pr-review"]
+
+    def test_unset_disables_nothing(self, monkeypatch):
+        from akshara import config
+
+        monkeypatch.delenv("AKSHARA_DISABLED_SKILLS", raising=False)
+        assert config.disabled_skill_patterns() == []

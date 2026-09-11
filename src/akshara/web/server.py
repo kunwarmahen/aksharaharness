@@ -694,6 +694,26 @@ def make_app(session: WebSession, static_dir: Path | None = None,
                 "source": skill.source, "path": str(skill.path),
                 "allowed_tools": list(skill.allowed_tools), "body": skill.body}
 
+    @app.post("/api/skills")
+    async def skills_toggle(req: Request) -> dict[str, Any]:
+        """Enable/disable one skill by exact name -- the panel's switch, and
+        the twin of POST /api/tools. It DOES take require_idle(), which the
+        tools toggle deliberately does not: the roster is a system-prompt
+        layer, and rewriting the prompt under a running turn changes the
+        request in flight."""
+        require_ready()
+        require_idle()
+        skills = require_skills()
+        body = await req.json()
+        name, enabled = body.get("name"), body.get("enabled")
+        if not isinstance(name, str) or not isinstance(enabled, bool):
+            raise HTTPException(400, "name (str) and enabled (bool) required")
+        if not (skills.enable(name) if enabled else skills.disable(name)):
+            raise HTTPException(404, f"no such skill: {name!r}")
+        skills.reapply()
+        session.broadcast({"type": "state", **session.state()})
+        return session.state()
+
     @app.post("/api/skills/reload")
     def skills_reload() -> dict[str, Any]:
         """Re-scan every root after editing a SKILL.md. require_idle: the

@@ -269,13 +269,16 @@ three endpoints that mirror the REPL's commands exactly: `GET
 
 Two decisions worth recording:
 
-**Reload takes `require_idle()`; the tool toggles deliberately do not.**
+**Reload and the skill toggle take `require_idle()`; the tool toggles
+deliberately do not.**
 Switching a tool off mid-turn is the *point* — the loop re-consults the
 registry per call, so a runaway chain can be cut without waiting it out.
 The skills roster is different: it is a system-prompt layer, and
 rewriting the prompt under a running turn changes the request in flight.
-So the one that edits the prompt waits, and the one that edits the
-registry does not.
+So the ones that edit the prompt wait, and the one that edits the
+registry does not. `POST /api/skills` is otherwise the exact shape of
+`POST /api/tools` — name + enabled, 404 on an unknown name, a broadcast
+so every open tab's panel follows along.
 
 **Reading a skill in the panel does not mark it loaded.** Each row shows
 a filled dot when the model actually pulled that skill this session —

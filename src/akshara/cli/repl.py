@@ -55,6 +55,9 @@ HELP = """[bold]commands[/bold]
   /skills            list skills on disk (loaded ones marked, broken ones
                      explained); /skills reload re-scans after you edit one
   /skills NAME       show one skill's instructions without spending a turn
+  /skills off|on NAME
+                     pull or restore skills MID-SESSION (globs ok: deploy-*)
+                     — same switch as /tools, applied to the roster
   /NAME ...          run a skill directly: /pr-review the auth branch
   /mcp               list connected mcp servers
   /mcp add ...       connect a server MID-SESSION: /mcp add NAME URL, or
@@ -401,6 +404,10 @@ class Repl:
             self.console.print(f"[green]rescanned[/green] -- {len(found)} "
                                f"skill(s), {len(found.broken)} broken")
             return
+        parts = arg.split()
+        if parts and parts[0] in ("off", "on"):
+            self._skills_toggle(skills, parts[0], parts[1:])
+            return
         if arg:
             skill = skills.get(arg)
             if skill is None:
@@ -416,6 +423,38 @@ class Repl:
             return
         self.console.print(self._skills_panel(skills), markup=False)
 
+    def _skills_toggle(self, skills: Any, verb: str, patterns: list[str]) -> None:
+        """``/skills off|on NAME|GLOB...`` -- the /tools switch, for skills.
+
+        Same matching rule as AKSHARA_DISABLED_SKILLS, and the same soft
+        semantics: a pulled skill stays on disk and keeps showing up in
+        /skills marked [off]; it just leaves the roster and refuses to
+        load until you bring it back. Recomposing the prompt costs the
+        cached prefix, which is the honest price of changing what the
+        model is told mid-session.
+        """
+        import fnmatch
+
+        if not patterns:
+            self.console.print(f"[red]usage: /skills {verb} NAME|GLOB "
+                               "[NAME|GLOB...] -- bare /skills lists[/red]")
+            return
+        present = skills.names()
+        affected = sorted({n for pat in patterns
+                           for n in present if fnmatch.fnmatch(n, pat)})
+        unmatched = [pat for pat in patterns
+                     if not any(fnmatch.fnmatch(n, pat) for n in present)]
+        for name in affected:
+            skills.disable(name) if verb == "off" else skills.enable(name)
+        if affected:
+            skills.reapply()  # the roster is a prompt layer; rewrite it
+            word = "pulled" if verb == "off" else "restored"
+            self.console.print(f"[green]{word}[/green] {', '.join(affected)} "
+                               "-- applies to the next model call")
+        if unmatched:
+            self.console.print(f"[yellow]no skill matches: "
+                               f"{', '.join(unmatched)}[/yellow]")
+
     def _skills_panel(self, skills: Any) -> str:
         """Bare-/skills text. PLAIN, for the same reason /env's panel is."""
         if not len(skills) and not skills.found.broken:
@@ -425,7 +464,9 @@ class Repl:
         lines = [f"{len(skills)} skill(s):"]
         for skill in skills:
             mark = "*" if skill.name in skills.loaded else " "
-            lines.append(f" {mark} {skill.name} [{skill.source}] "
+            off = " [off]" if skills.is_disabled(skill.name) else ""
+            kind = " [delegated]" if skill.delegated else ""
+            lines.append(f" {mark} {skill.name} [{skill.source}]{kind}{off} "
                          f"-- {skill.description}")
         for broken in skills.found.broken:
             lines.append(f" ! {broken.path}: {broken.reason}")
@@ -447,6 +488,19 @@ class Repl:
         skills = getattr(self.agent, "skills", None)
         if skills is None or skills.get(name) is None:
             return False
+        if skills.is_disabled(name):
+            self.console.print(f"[yellow]skill {name!r} is off "
+                               f"(/skills on {name} to restore)[/yellow]")
+            return True
+        skill = skills.get(name)
+        if skill.delegated:
+            # Its whole point is running fenced; typing /NAME must not
+            # smuggle the body into the main conversation instead.
+            self.console.print(
+                f"[yellow]{name!r} is a delegated skill -- ask for it in "
+                f"plain words and the model will run it in a sub-agent "
+                f"with only {', '.join(skill.allowed_tools)}[/yellow]")
+            return True
         skill = skills.load(name)
         task = arg or "Follow this skill for the current task."
         message = (f"Use the {skill.name!r} skill.\n\n"

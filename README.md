@@ -56,6 +56,8 @@ uv run akshara --resume                               # restore the newest check
 uv run akshara --env-context local                    # machine facts only (default: full)
 uv run akshara --skills-dir ~/shared-skills           # extra skills root (repeatable)
 uv run akshara --no-skills                            # ignore skills entirely
+                                                      #   ...and /skills off NAME
+                                                      #   pulls one mid-session
 uv run akshara "summarize README.md"                  # one-shot prompt, then exit
 uv run akshara --image photo.png "what's in this picture?"   # vision one-shot
 ```
@@ -138,12 +140,20 @@ because someone got bitten by it once and wrote it down.
 | `~/.akshara/skills/` | yours, on every project |
 | `--skills-dir` / `$AKSHARA_SKILLS_PATH` | explicit, wins over all of them |
 
+A skill can also declare `mode: subagent`, and then its `allowed-tools`
+stop being advice: the instructions run in a **fresh child agent** built
+with exactly those tools and nothing else, and only its conclusion comes
+back. Use it where isolation is the point — a survey that must not be
+able to write, an audit you want provably read-only.
+
 In the REPL: `/skills` lists them (with what broke and what got loaded),
-`/skills NAME` prints one without spending a turn, `/skills reload`
+`/skills NAME` prints one without spending a turn, `/skills off deploy-*`
+pulls one mid-session the way `/tools off` pulls a tool (and
+`$AKSHARA_DISABLED_SKILLS` never loads them at all), `/skills reload`
 re-scans after an edit, and `/new-tool add a count_lines tool` runs one
-directly. The web UI gets a skills section in the tools panel. Full
-design notes, including why the roster is frozen and what `allowed-tools`
-does *not* do: [notes/30](notes/30-skills.md).
+directly. The web UI gets a skills section in the tools panel, switches
+included. Full design notes, including why the roster is frozen and what
+`allowed-tools` does *not* do: [notes/30](notes/30-skills.md).
 
 ### One-command starts
 
@@ -523,7 +533,11 @@ src/akshara/
 │                   frontmatter, hand-parsed). Three cost tiers -- description
 │                   in the prompt every turn, body via the load_skill tool,
 │                   bundled files via read_file; roster frozen at session start
-│                   so --cache's prefix survives ([notes/30](notes/30-skills.md))
+│                   so --cache's prefix survives. mode:subagent runs one in a
+│                   scoped child instead (run_skill), which is the only place
+│                   allowed-tools is ENFORCED rather than announced; /skills
+│                   off|on + $AKSHARA_DISABLED_SKILLS are the operator's switch
+│                   ([notes/30](notes/30-skills.md))
 ├── mcp.py          MCP client, hand-rolled JSON-RPC over stdio AND
 │                   Streamable HTTP (SSE responses via providers/sse.py):
 │                   handshake, tools/list, tools/call; MCPManager adds/
@@ -722,7 +736,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 803 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 845 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The

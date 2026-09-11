@@ -21,6 +21,12 @@ This module owns tier 1 and hands out tier 2. Two constraints shape it:
   30 and 50 tools) and spend a schema per skill on every request.
   ``load_skill`` is one tool whose argument happens to be a name.
 
+A skill declaring ``mode: subagent`` is handed to ``run_skill`` instead,
+which spends a fresh child agent to make its ``allowed-tools`` real (see
+``delegate`` below). The budget for those children is the sub-agent
+budget -- shared with ``spawn_subagent`` when both are on, because both
+are the same thing: delegation the operator is paying for.
+
 Past ``ROSTER_LIMIT`` skills the roster degrades to names only and
 ``list_skills`` registers alongside -- still static, still cache-safe,
 with the descriptions moved from every request to one tool result.
@@ -42,6 +48,13 @@ ROSTER_HEADER = (
     "project. When a task matches one, call load_skill with its name and "
     "follow the instructions it returns BEFORE doing the work; they are "
     "more specific than your defaults and were written by the operator."
+)
+
+#: Appended only when some skill is delegated -- an unmarked roster would
+#: promise load_skill for a skill load_skill refuses.
+DELEGATED_FOOTER = (
+    "Skills marked [delegated] run in a separate agent with only the tools "
+    "they declare: use run_skill (name + task) for those, not load_skill."
 )
 
 NAMES_ONLY_FOOTER = (
@@ -73,6 +86,11 @@ class SkillRegistry:
         #: observability: it answers "did the skill even fire?", which is
         #: the first question every skill author asks.
         self.loaded: list[str] = []
+        #: Operator-disabled names. The same soft switch ToolRegistry has:
+        #: the skill stays DISCOVERED (so /skills can still list it, marked
+        #: [off]) but leaves the roster and refuses to load. Reversible
+        #: mid-session, unlike deleting the folder.
+        self._disabled: set[str] = set()
         self._agent: Any = None
 
     # ---- the set ------------------------------------------------------------
@@ -89,10 +107,41 @@ class SkillRegistry:
     def names(self) -> list[str]:
         return self.found.names()
 
+    def available(self) -> list[str]:
+        """Active names -- what an error message may honestly suggest."""
+        return [s.name for s in self.active()]
+
+    def active(self) -> list[Skill]:
+        """Everything the MODEL can see: discovered minus disabled."""
+        return [s for s in self.found if s.name not in self._disabled]
+
+    # ---- runtime enable/disable ---------------------------------------------
+
+    def disable(self, name: str) -> bool:
+        """Hide one skill from the model until re-enabled. Unknown names
+        report False rather than pre-registering a phantom."""
+        if self.found.get(name) is None:
+            return False
+        self._disabled.add(name)
+        return True
+
+    def enable(self, name: str) -> bool:
+        """Undo a disable (idempotent). False only for unknown names."""
+        if self.found.get(name) is None:
+            return False
+        self._disabled.discard(name)
+        return True
+
+    def is_disabled(self, name: str) -> bool:
+        return name in self._disabled
+
+    def disabled_names(self) -> list[str]:
+        return sorted(self._disabled)
+
     @property
     def names_only(self) -> bool:
         """True when the roster is too long to carry descriptions."""
-        return len(self.found) > self.roster_limit
+        return len(self.active()) > self.roster_limit
 
     # ---- tier 1: the roster ------------------------------------------------
 
@@ -102,15 +151,22 @@ class SkillRegistry:
         PURE -- no IO, no ranking, no per-turn state. That is what keeps
         the cached prefix stable for a whole session.
         """
-        if not self.found:
+        active = self.active()
+        if not active:
             return None
         lines = [ROSTER_HEADER]
         if self.names_only:
-            lines.append(", ".join(self.names()))
+            lines.append(", ".join(s.name for s in active))
             lines.append(NAMES_ONLY_FOOTER)
         else:
-            lines.extend(skill.roster_line() for skill in self.found)
+            lines.extend(skill.roster_line() for skill in active)
+        if self.delegated_names():
+            lines.append(DELEGATED_FOOTER)
         return "\n".join(lines)
+
+    def delegated_names(self) -> list[str]:
+        """Active skills that run in a sub-agent rather than inline."""
+        return [s.name for s in self.active() if s.delegated]
 
     # ---- tier 2: handing one over -------------------------------------------
 
@@ -127,6 +183,10 @@ class SkillRegistry:
         skill = self.found.get(name)
         if skill is None:
             raise KeyError(name)
+        if self.is_disabled(name):
+            # A distinct message from "no such skill": the model naming it
+            # did nothing wrong -- the operator pulled it this session.
+            raise PermissionError(name)
         try:
             skill = load_skill(skill.path, source=skill.source)
         except Exception:
@@ -158,11 +218,72 @@ class SkillRegistry:
         return [name for name in skill.allowed_tools
                 if name not in registry or registry.is_disabled(name)]
 
+    def delegate(self, skill: Skill, task: str) -> Any:
+        """Run a delegated skill in a scoped child; return its SubagentResult.
+
+        This is where ``allowed-tools`` becomes real. Everything that makes
+        the fence trustworthy already lives in subagent.py -- the child's
+        registry is built from the allowed names and holds nothing else,
+        it inherits the parent's permission gate (delegation cannot
+        escalate), and one level deep is enforced there too. So this
+        method's whole job is translating a skill into that call.
+
+        Tools the skill names but this session lacks are DROPPED from the
+        child's registry (the spawner would refuse the whole run over one
+        unknown name) and named in the objective instead -- same honesty
+        rule inline delivery follows, since a child that plans around a
+        tool it does not have wastes its whole window discovering that.
+        """
+        missing = set(self.missing_tools(skill))
+        allowed = [t for t in skill.allowed_tools if t not in missing]
+        if not allowed:
+            from akshara.errors import ToolError
+            raise ToolError(
+                f"skill {skill.name!r} needs {', '.join(skill.allowed_tools)}, "
+                f"and this session has none of them -- it cannot run here")
+
+        objective = [skill.body, f"Task: {task}"]
+        if missing:
+            objective.insert(1, (
+                f"NOTE: this skill also expects {', '.join(sorted(missing))}, "
+                f"which are NOT available. Adapt the steps that need them, "
+                f"or report plainly that the task cannot be completed."))
+        if skill.name not in self.loaded:
+            self.loaded.append(skill.name)
+        return self.spawner().spawn({
+            "objective": "\n\n".join(objective),
+            "output_format": skill.output_format or (
+                "A short report: what you did, what you found, and -- if the "
+                "skill could not be completed -- exactly where it stopped."),
+            "tools_allowed": allowed,
+            "justification": f"the {skill.name!r} skill declares mode: subagent",
+            **({"max_iterations": skill.max_iterations}
+               if skill.max_iterations else {}),
+        })
+
+    def spawner(self) -> Any:
+        """The session's SubagentSpawner, created on first use.
+
+        Reused from ``agent.subagents`` when --subagents already made one,
+        so the two share a budget: a delegated skill IS a sub-agent, and
+        two independent counters would let the pair spend twice what the
+        operator allowed.
+        """
+        from akshara.subagent import SubagentSpawner
+
+        existing = getattr(self._agent, "subagents", None)
+        if existing is not None:
+            return existing
+        spawner = SubagentSpawner(self._agent)
+        self._agent.subagents = spawner
+        return spawner
+
     def suggestions(self, name: str, limit: int = 3) -> list[str]:
         """Near-misses for an unknown name -- substring first, then prefix."""
         needle = name.strip().lower()
-        hits = [n for n in self.names() if needle and needle in n]
-        hits += [n for n in self.names()
+        visible = [s.name for s in self.active()]
+        hits = [n for n in visible if needle and needle in n]
+        hits += [n for n in visible
                  if n not in hits and needle[:3] and n.startswith(needle[:3])]
         return hits[:limit]
 
@@ -194,7 +315,7 @@ class SkillRegistry:
         """load_skill when there are skills at all; list_skills only when
         the roster had to drop its descriptions. A project with three
         skills therefore pays exactly ONE extra tool schema."""
-        from akshara.skills.tools import ListSkills, LoadSkill
+        from akshara.skills.tools import ListSkills, LoadSkill, RunSkill
 
         registry = getattr(agent, "registry", None)
         if registry is None or not self.found:
@@ -203,6 +324,9 @@ class SkillRegistry:
             registry.register(LoadSkill(self))
         if self.names_only and ListSkills.name not in registry:
             registry.register(ListSkills(self))
+        # run_skill costs a schema only where a delegated skill exists.
+        if self.delegated_names() and RunSkill.name not in registry:
+            registry.register(RunSkill(self))
 
     def reload(self) -> SkillSet:
         """Re-scan every root -- ``/skills reload`` after writing one.
@@ -213,6 +337,9 @@ class SkillRegistry:
         """
         self.found = discover(self.cwd, home=self.home)
         self.loaded = [n for n in self.loaded if self.found.get(n)]
+        # A disable survives a rescan (the operator pulled that NAME, not
+        # that file), but a deleted skill stops being disabled-and-absent.
+        self._disabled = {n for n in self._disabled if self.found.get(n)}
         if self._agent is not None:
             self._register_tools(self._agent)
         self.reapply()
@@ -228,12 +355,15 @@ class SkillRegistry:
                  "source": s.source, "path": str(s.path),
                  "allowed_tools": list(s.allowed_tools),
                  "missing_tools": self.missing_tools(s),
+                 "mode": s.mode,
+                 "enabled": not self.is_disabled(s.name),
                  "loaded": s.name in self.loaded}
                 for s in self.found
             ],
             "broken": [{"path": str(b.path), "reason": b.reason,
                         "source": b.source} for b in self.found.broken],
             "loaded": list(self.loaded),
+            "disabled": self.disabled_names(),
             "names_only": self.names_only,
         }
 

@@ -760,7 +760,7 @@ function renderSkillRows(skills) {
 
 function skillRow(s) {
   const row = document.createElement("div");
-  row.className = "mcp-row";
+  row.className = "mcp-row" + (s.enabled === false ? " off" : "");
 
   const dot = document.createElement("span");
   // A filled dot means the model actually pulled it this session -- the
@@ -771,7 +771,8 @@ function skillRow(s) {
 
   const name = document.createElement("div");
   name.innerHTML = `<span class="t-name">${esc(s.name)}</span>`
-    + `<span class="t-badge">${esc(s.source)}</span>`;
+    + `<span class="t-badge">${esc(s.source)}</span>`
+    + (s.mode === "subagent" ? '<span class="t-ro">delegated</span>' : "");
   name.title = s.path;
   row.append(name);
 
@@ -779,6 +780,30 @@ function skillRow(s) {
   desc.className = "t-desc";
   desc.textContent = s.description;
   row.append(desc);
+
+  // Same switch as a tool row: off = out of the roster, refuses to load.
+  const sw = document.createElement("label");
+  sw.className = "t-switch";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = s.enabled !== false;
+  box.title = "off = the model is never told this skill exists";
+  box.onchange = async () => {
+    box.disabled = true;
+    try {
+      const res = await fetch("/api/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: s.name, enabled: box.checked }),
+      });
+      // 409 = a turn is running; the roster edits the prompt, so it waits
+      if (!res.ok) box.checked = !box.checked;
+      else row.classList.toggle("off", !box.checked);
+    } catch { box.checked = !box.checked; }
+    finally { box.disabled = false; }
+  };
+  sw.append(box);
+  row.append(sw);
 
   return row;
 }

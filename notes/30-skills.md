@@ -164,7 +164,7 @@ rebuild it from the layers this session actually owns.
 
 ## What `allowed-tools` does, and what it does not
 
-It is a note, not a gate.
+For a normal skill it is a note, not a gate.
 
 The harness has no way to know whether the model is still "inside" a
 skill three tool calls later. A restriction keyed to that would be
@@ -183,13 +183,92 @@ them, or say plainly that the skill cannot be completed here.
 
 The real boundary has not moved: every dangerous tool a skill names is
 still permission-gated when it actually runs
-([notes/06](06-cli.md#permissions)). A skill that genuinely needs
-enforced isolation belongs in a sub-agent, whose tool scope *is* enforced
-— at the catalog level, in `subagent.py` ([notes/08](08-sub-agents.md)).
+([notes/06](06-cli.md#permissions)).
+
+## `mode: subagent` — when the fence has to be real
+
+If you want the list enforced rather than announced, say so:
+
+```markdown
+---
+name: repo-survey
+description: Survey part of this codebase and report what is there...
+mode: subagent
+allowed-tools: read_file, glob, grep, list_dir
+output-format: A short report -- the files that matter with one line each.
+max-iterations: 15
+---
+```
+
+Now the skill does not come back as instructions at all. `run_skill`
+hands the body to a **fresh child agent** whose registry is built from
+exactly those four names — it physically has no `write_file`, no `bash`,
+no way to acquire one — and only the child's final answer returns to the
+parent. Every constraint that makes that trustworthy already existed in
+`subagent.py` ([notes/08](08-sub-agents.md)): scope enforced at the
+catalog, the parent's permission gate inherited (delegation cannot
+escalate), one level deep, a spawn budget.
+
+Two rules keep the fence from leaking:
+
+- **`load_skill` refuses a delegated skill.** Handing the body over
+  inline would quietly undo the thing the author asked for. It answers
+  with a pointer to `run_skill` instead — data, not a failed turn.
+- **The roster marks it `[delegated]`** and adds one line telling the
+  model which tool to reach for. An unmarked roster would promise
+  `load_skill` for a skill `load_skill` deliberately refuses.
+
+What it costs: a whole context window, and the parent learns only what
+the child concluded. That is the trade — same one sub-agents always
+made. Use it where the isolation is the point (surveys, audits, anything
+you want provably unable to write) and leave everything else inline.
+
+Two authoring errors are caught when the file loads, not mid-task:
+`mode: subagent` with no `allowed-tools` (nothing to fence, and a child
+with no tools cannot work), and a delegated skill listing
+`spawn_subagent` (sub-agents do not spawn sub-agents).
+
+Receipt, again on `qwen3.8-64k`, asked only to "get me oriented in how
+this project talks to model providers":
+
+```
+→ run_skill(name='repo-survey', task='Map how this codebase calls model providers…')
+── end_turn · 3895 in / 847 out · 2 iteration(s)
+```
+
+Two parent iterations. The child spent its own window reading
+`providers/`, and what came back was a page of accurate prose about the
+`Provider` ABC, the four adapters and the retry policy — none of the
+transcript that produced it.
 
 `load_skill` itself is `read_only`. It reads a Markdown file you wrote
 and put in your own repo; prompting for that would only train you to
-mash `y` on the one tool that is definitionally safe.
+mash `y` on the one tool that is definitionally safe. `run_skill` is
+**not** — the child can do whatever its tools can do, and a tool that
+starts an agent must never be auto-approved.
+
+## Switching skills off
+
+Skills get the same operator switch tools have, for the same reasons:
+
+```bash
+/skills off deploy-*        # pull one, or a family, mid-session
+/skills on deploy-web       # put it back
+AKSHARA_DISABLED_SKILLS=deploy-*,pr-review   # or never load them at all
+```
+
+The semantics are ToolRegistry's, deliberately: a pulled skill stays
+**discovered** — `/skills` still lists it, marked `[off]`, so you can see
+what you turned off — but it leaves the roster in the system prompt and
+refuses to load until you bring it back. Nothing is deleted, nothing
+needs a restart, and a disable survives a `/skills reload` because you
+pulled that *name*, not that file.
+
+One difference from `/tools off`, and it is the interesting one: pulling
+a skill recomposes the system prompt, which throws away the cached
+prefix. Pulling a tool does not. That is why the web UI's skill toggle
+waits for an idle turn while its tool toggle deliberately does not —
+editing the prompt under a running turn changes the request in flight.
 
 ## Where skills live
 
@@ -237,11 +316,17 @@ working skill away in the middle of a task.
 akshara                      # skills in ./skills are found automatically
 /skills                      # what is on disk, what broke, what got loaded
 /skills new-tool             # read one yourself — costs no model turn
+/skills off deploy-*         # pull one or a family; /skills on puts it back
 /skills reload               # after you edit one
 /new-tool add a count_lines tool     # run a skill directly
 akshara --skills-dir ~/shared-skills # extra root, wins over the implicit ones
 akshara --no-skills          # off entirely
+AKSHARA_DISABLED_SKILLS=deploy-*     # never load these in the first place
 ```
+
+`./start.sh` needs nothing new: drop a folder in `./skills` and every
+road picks it up — terminal, browser, and the container (which mounts
+`./skills` read-only so editing a skill never means rebuilding an image).
 
 In the web UI they get a section in the servers/skills/tools panel, with
 a filled dot for each skill the model actually pulled this session —

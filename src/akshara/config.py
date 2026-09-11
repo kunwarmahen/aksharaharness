@@ -216,6 +216,20 @@ def default_env_context() -> str:
     return value
 
 
+def disabled_skill_patterns() -> list[str]:
+    """Glob patterns from $AKSHARA_DISABLED_SKILLS (comma-separated).
+
+    The skills twin of AKSHARA_DISABLED_TOOLS: each pattern is fnmatch-ed
+    against discovered skill names, so this hides one skill ('pr-review')
+    or a family ('deploy-*'). A disabled skill stays DISCOVERED -- it is
+    still listed by /skills, marked [off] -- but leaves the roster in the
+    system prompt and refuses to load, so the model neither sees it nor
+    can reach it. Reversible in-session with /skills on NAME.
+    """
+    raw = os.environ.get("AKSHARA_DISABLED_SKILLS", "")
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 def disabled_tool_patterns() -> list[str]:
     """Glob patterns from $AKSHARA_DISABLED_TOOLS (comma-separated).
 

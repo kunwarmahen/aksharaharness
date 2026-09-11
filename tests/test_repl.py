@@ -747,3 +747,62 @@ class TestSkillShorthand:
         repl, console, _ = self.make_repl_with_skill(tmp_path, [])
         repl._command("/not-a-skill")
         assert "unknown command" in console.file.getvalue()
+
+
+class TestSkillsToggle:
+    """`/skills off|on NAME|GLOB` — the /tools switch, applied to the
+    roster. Pulls are live and reversible; the skill stays on disk."""
+
+    def make(self, tmp_path, *names):
+        for name in names:
+            folder = tmp_path / "skills" / name
+            folder.mkdir(parents=True)
+            (folder / "SKILL.md").write_text(
+                TestSkillsCommand.SKILL.replace("pr-review", name))
+        agent = Agent(ScriptedProvider([]), model="m",
+                      permissions=allow_read_only, cwd=tmp_path)
+        console = Console(file=io.StringIO(), width=200)
+        repl = Repl(agent, console, input_fn=lambda prompt: "")
+        enable_skills(agent, tmp_path, home=tmp_path / "home")
+        return repl, console, agent
+
+    def test_off_pulls_it_from_the_roster(self, tmp_path):
+        repl, console, agent = self.make(tmp_path, "pr-review", "release-cut")
+        assert repl._command("/skills off release-cut") is False
+        assert "pulled" in console.file.getvalue()
+        assert "release-cut" not in agent.system
+        assert "- pr-review:" in agent.system
+
+    def test_on_restores_it(self, tmp_path):
+        repl, _, agent = self.make(tmp_path, "pr-review")
+        repl._command("/skills off pr-review")
+        repl._command("/skills on pr-review")
+        assert "- pr-review:" in agent.system
+
+    def test_globs_match_like_the_tools_switch(self, tmp_path):
+        repl, _, agent = self.make(tmp_path, "deploy-web", "deploy-api", "other")
+        repl._command("/skills off deploy-*")
+        assert agent.skills.disabled_names() == ["deploy-api", "deploy-web"]
+        assert "- other:" in agent.system
+
+    def test_the_listing_marks_what_is_off(self, tmp_path):
+        repl, console, _ = self.make(tmp_path, "pr-review")
+        repl._command("/skills off pr-review")
+        repl._command("/skills")
+        assert "[off]" in console.file.getvalue()
+
+    def test_a_bare_verb_reports_usage(self, tmp_path):
+        repl, console, _ = self.make(tmp_path, "pr-review")
+        repl._command("/skills off")
+        assert "usage:" in console.file.getvalue()
+
+    def test_an_unmatched_glob_says_so(self, tmp_path):
+        repl, console, _ = self.make(tmp_path, "pr-review")
+        repl._command("/skills off ghost-*")
+        assert "no skill matches" in console.file.getvalue()
+
+    def test_the_shorthand_refuses_a_pulled_skill(self, tmp_path):
+        repl, console, _ = self.make(tmp_path, "pr-review")
+        repl._command("/skills off pr-review")
+        assert repl._command("/pr-review do it") is False
+        assert "is off" in console.file.getvalue()

@@ -22,6 +22,7 @@ from akshara.config import (
     default_env_context,
     default_model,
     default_tool_select,
+    disabled_skill_patterns,
     disabled_tool_patterns,
     load_settings,
 )
@@ -178,9 +179,13 @@ def enable_subagents(agent: Agent, console: Console) -> SubagentSpawner:
     """--subagents wiring: register the spawn tool and tee child streams to
     the terminal. Factored out of main() so tests (and embedders) can set
     sub-agents up without a full CLI parse."""
-    spawner = SubagentSpawner(agent)
+    spawner = getattr(agent, "subagents", None) or SubagentSpawner(agent)
     spawner.on_child_event = SubagentTee(console)
-    agent.registry.register(SpawnSubagent(spawner))
+    if SpawnSubagent.name not in agent.registry:
+        agent.registry.register(SpawnSubagent(spawner))
+    # Published so delegated skills share this budget rather than opening a
+    # second one ([notes/30](../notes/30-skills.md)).
+    agent.subagents = spawner
     return spawner
 
 
@@ -414,6 +419,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.skills_dir:
             _prepend_skill_path(args.skills_dir)
         skills = enable_skills(agent, Path(args.cwd))
+        # Operator kill-switch, the skills twin of AKSHARA_DISABLED_TOOLS:
+        # globs pull skills out of the roster before the model ever sees
+        # one. Reversible in-session with /skills on NAME.
+        if patterns := disabled_skill_patterns():
+            present = skills.names()
+            doomed = sorted({n for pat in patterns
+                             for n in present if fnmatch.fnmatch(n, pat)})
+            for name in doomed:
+                skills.disable(name)
+            if doomed:
+                skills.reapply()
+                console.print(f"[dim]skills disabled: {', '.join(doomed)}[/dim]")
+            unmatched = [pat for pat in patterns
+                         if not any(fnmatch.fnmatch(n, pat) for n in present)]
+            if unmatched:
+                console.print(f"[yellow]no skills match AKSHARA_DISABLED_"
+                              f"SKILLS entry: {', '.join(unmatched)}[/yellow]")
         if len(skills):
             console.print(f"[dim]skills: {len(skills)} loaded -- "
                           f"{', '.join(skills.names())}[/dim]")
