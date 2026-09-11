@@ -31,7 +31,8 @@ from akshara.context import (
 from akshara.errors import ToolError
 from akshara.permissions import PermissionFn, PermissionRequest, allow_read_only
 from akshara.providers.base import Provider, collect
-from akshara.tools.base import ToolContext, ToolOutput, ToolRegistry
+from akshara.tools.base import (ToolContext, ToolOutput, ToolRegistry,
+                                coerce_arguments)
 from akshara.tools.selector import ToolCatalog, query_from_transcript
 from akshara.types import (
     Block,
@@ -469,6 +470,12 @@ class Agent:
             tool = self._get_visible_tool(call.name)
         except KeyError as exc:
             return ToolResult(call.id, str(exc), is_error=True)
+
+        # Repair stringified non-scalars BEFORE the summary is built, so
+        # the human approves -- and hooks, execution and history record --
+        # the arguments that will actually run. Schema-driven and a no-op
+        # for anything already well-formed (tools/base.coerce_arguments).
+        call.arguments = coerce_arguments(call.arguments, tool.parameters)
 
         # Build the human-facing summary defensively: a broken summary()
         # must never block the approval flow itself.

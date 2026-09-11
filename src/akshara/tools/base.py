@@ -17,6 +17,7 @@ A tool is three things glued together:
 from __future__ import annotations
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -200,3 +201,119 @@ def require_int(args: dict[str, Any], key: str, *, default: int | None = None) -
     if isinstance(value, bool) or not isinstance(value, int):
         raise ToolError(f"argument {key!r} must be an integer, got {type(value).__name__}")
     return value
+
+
+# ---------------------------------------------------------------------------
+# Argument coercion: repairing the stringified-JSON habit
+# ---------------------------------------------------------------------------
+#
+# Models -- local ones especially, but not only -- routinely emit a
+# non-scalar argument as a STRING of JSON:
+#
+#     {"symbols": "[\"AAPL\"]"}      instead of      {"symbols": ["AAPL"]}
+#
+# Nothing in the harness is mis-parsing when that happens. The wire
+# carried a string, ``json.loads`` faithfully produced a string, and the
+# tool (or an MCP server's JSON-Schema validator) correctly rejects it:
+#
+#     validating /properties/symbols: type: ["AAPL"] has type "string",
+#     want one of "null, array"
+#
+# The schema is right there, though, and it says what was meant. So we
+# repair it rather than make every array-taking tool unusable on models
+# with this habit -- which is most of them at small sizes, and this
+# project treats local models as a first-class road.
+#
+# The one rule that keeps this honest: NEVER coerce a parameter whose
+# schema also accepts a string. There, a string is a legitimate value and
+# "looks like JSON" is not permission to reinterpret it -- a grep pattern
+# of "[0-9]" must stay the text the caller typed.
+
+
+def _declared_types(spec: dict[str, Any]) -> set[str]:
+    """JSON-Schema ``type`` as a set. Empty = unstated, so hands off.
+
+    anyOf/oneOf deliberately read as unstated: a union we have not
+    reasoned about is not a licence to rewrite the value.
+    """
+    declared = spec.get("type")
+    if isinstance(declared, str):
+        return {declared}
+    if isinstance(declared, list):
+        return {t for t in declared if isinstance(t, str)}
+    return set()
+
+
+def _matches(value: Any, types: set[str]) -> bool:
+    """Does a parsed value satisfy any of these declared types?"""
+    if isinstance(value, bool):
+        # bool before int: True is an int in Python, but a schema asking
+        # for a number does not mean it wants True.
+        return bool({"boolean"} & types)
+    if value is None:
+        return "null" in types
+    if isinstance(value, list):
+        return "array" in types
+    if isinstance(value, dict):
+        return "object" in types
+    if isinstance(value, int):
+        return bool({"integer", "number"} & types)
+    if isinstance(value, float):
+        return "number" in types
+    return False
+
+
+def _coerce_value(value: Any, spec: dict[str, Any]) -> Any:
+    types = _declared_types(spec)
+    if not types or "string" in types:
+        return value  # see the rule above
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            # Not JSON at all: leave it, and let the tool's own validation
+            # produce the honest complaint. Guessing would be worse.
+            return value
+        if not _matches(parsed, types):
+            return value
+        value = parsed
+    if isinstance(value, dict) and "object" in types:
+        return coerce_arguments(value, spec)
+    if isinstance(value, list) and "array" in types:
+        items = spec.get("items")
+        if isinstance(items, dict):
+            repaired = [_coerce_value(item, items) for item in value]
+            if any(a is not b for a, b in zip(repaired, value, strict=True)):
+                return repaired
+    return value
+
+
+def coerce_arguments(arguments: Any, schema: dict[str, Any] | None) -> Any:
+    """Return ``arguments`` with stringified non-scalars parsed back.
+
+    Schema-driven and conservative: only properties the schema names,
+    only where the declared type cannot be a string, only when the string
+    actually parses to the declared shape. Unknown keys, unstated types
+    and unparseable strings all pass through untouched, so a tool's own
+    validation still sees exactly what the model sent.
+
+    Returns the ORIGINAL object when nothing changed, which lets callers
+    use an identity check to tell whether anything was repaired.
+    """
+    properties = (schema or {}).get("properties")
+    if not isinstance(properties, dict) or not isinstance(arguments, dict):
+        return arguments
+    repaired = dict(arguments)
+    changed = False
+    for key, value in arguments.items():
+        spec = properties.get(key)
+        if not isinstance(spec, dict):
+            continue
+        fixed = _coerce_value(value, spec)
+        if fixed is not value:
+            repaired[key] = fixed
+            changed = True
+    return repaired if changed else arguments

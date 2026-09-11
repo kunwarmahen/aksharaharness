@@ -643,3 +643,73 @@ def test_utilization_unchanged_when_headroom_fits():
     drain(agent)
 
     assert agent.utilization() == pytest.approx(18_361 / 183_616)
+
+
+class TestStringifiedArgumentsReachToolsRepaired:
+    """A model that sends {"items": "[1,2]"} must not break every
+    array-taking tool. Repair happens in the GATE, so the human approves
+    and history records the arguments that actually run."""
+
+    class Echo(Tool):
+        name = "echo_args"
+        description = "report what it received"
+        parameters = {"type": "object", "properties": {
+            "items": {"type": "array", "items": {"type": "string"}},
+            "note": {"type": "string"},
+        }}
+        read_only = True
+
+        def summary(self, args, ctx):
+            return f"echo_args({args})"
+
+        def run(self, args, ctx):
+            return repr({k: (type(v).__name__, v) for k, v in args.items()})
+
+    def _registry(self):
+        registry = ToolRegistry()
+        registry.register(self.Echo())
+        return registry
+
+    def test_the_tool_sees_a_real_list(self):
+        provider = ScriptedProvider([
+            assistant_tool_call("c1", "echo_args",
+                                {"items": '["AAPL"]', "note": "[keep me]"}),
+            assistant_text("ok"),
+        ])
+        agent = Agent(provider, model="m", permissions=yolo,
+                      tools=self._registry())
+        agent.run("go")
+        results = [b for m in agent.history for b in m.content
+                   if isinstance(b, ToolResult)]
+        assert "('list', ['AAPL'])" in results[0].content
+        # a string-typed param stays exactly as sent, brackets and all
+        assert "('str', '[keep me]')" in results[0].content
+
+    def test_history_records_the_repaired_form(self):
+        """Otherwise a resumed session replays the broken arguments."""
+        provider = ScriptedProvider([
+            assistant_tool_call("c1", "echo_args", {"items": '["AAPL"]'}),
+            assistant_text("ok"),
+        ])
+        agent = Agent(provider, model="m", permissions=yolo,
+                      tools=self._registry())
+        agent.run("go")
+        calls = [b for m in agent.history for b in m.content
+                 if isinstance(b, ToolCall)]
+        assert calls[0].arguments == {"items": ["AAPL"]}
+
+    def test_the_permission_prompt_shows_what_will_run(self):
+        seen = []
+
+        def gate(request):
+            seen.append(request.arguments)
+            return True
+
+        provider = ScriptedProvider([
+            assistant_tool_call("c1", "echo_args", {"items": '["AAPL"]'}),
+            assistant_text("ok"),
+        ])
+        agent = Agent(provider, model="m", permissions=gate,
+                      tools=self._registry())
+        agent.run("go")
+        assert seen == [{"items": ["AAPL"]}]

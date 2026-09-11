@@ -292,6 +292,13 @@ a tool for just this session and put it back later: `/tools off bash`,
 or the switches in the web UI's tools panel. Both take effect
 immediately, even mid-turn ([notes/17](notes/17-tool-selection.md)).
 
+Arguments are repaired against the tool's own schema before anything
+runs: models often emit an array or object as a *string* of JSON
+(`{"symbols": "[\"AAPL\"]"}`), which breaks every array-taking tool
+until somebody parses it back. A parameter that could legitimately BE a
+string is never touched — `grep`'s `[0-9]+` stays text
+([notes/04](notes/04-tools.md#stringified-non-scalars-repair-dont-reject)).
+
 MCP servers (hand-rolled JSON-RPC — no SDK; stdio and Streamable-HTTP
 transports, picked by config shape). Config file, repeatable flag; tools
 register as `mcp__<server>__<tool>`:

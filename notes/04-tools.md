@@ -91,6 +91,50 @@ Model-supplied arguments are untrusted input. `require_str` /
 read and correct ("argument 'offset' must be an integer, got str") — not
 an assert, not a traceback.
 
+## Stringified non-scalars: repair, don't reject
+
+Models -- local ones especially, but not only -- routinely emit an array
+or object argument as a STRING of JSON:
+
+```
+{"symbols": "[\"AAPL\"]"}      instead of      {"symbols": ["AAPL"]}
+```
+
+Nothing in the harness is mis-parsing when that happens, which is the
+first thing to establish before going hunting. The wire genuinely
+carried a string: `collect()` accumulates the streamed
+`partial_json` fragments and calls `json.loads` exactly once, and a
+`json.loads` of `{"symbols": "[...]"}` correctly yields a string. Pass
+it on and an MCP server's validator says so precisely:
+
+```
+validating /properties/symbols: type: ["AAPL"] has type "string",
+want one of "null, array"
+```
+
+Scalars survive (a stringified `"5"` is rarer, and plenty of servers
+coerce it), so the symptom looks oddly selective: every tool with an
+array parameter is broken, everything else works. That was a live
+report against a commercial MCP server, and `todo_write.items` gave the
+same shape at home -- so it was never MCP-specific.
+
+The schema is right there and it says what was meant, so
+`coerce_arguments` repairs it in `_gate`, before the summary is built:
+the human approves, and hooks, execution and history all record, the
+arguments that will actually run. Otherwise a resumed session replays
+the broken form.
+
+One rule keeps it honest: **never coerce a parameter whose schema also
+accepts a string.** There a string is a legitimate value, and "looks
+like JSON" is not permission to reinterpret it -- `grep`'s pattern
+`[0-9]+` must stay the text the caller typed. Unstated types (including
+bare `anyOf`) count as string-accepting for this purpose: a union nobody
+reasoned about is not a licence to rewrite. Strings that do not parse,
+or parse to the wrong shape (`'"AAPL"'` for an array), pass through
+untouched so the tool's own validation still produces the honest
+complaint. And a well-formed argument dict comes back as the SAME
+object, so callers can detect a repair by identity.
+
 ## grep grew a ripgrep backend (one contract, two engines)
 
 `search.py` now picks its engine per call:

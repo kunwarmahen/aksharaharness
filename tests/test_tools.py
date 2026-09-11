@@ -372,3 +372,98 @@ class TestRegistryEnableDisable:
         for name in ("write_file", "read_file"):
             registry.disable(name)
         assert registry.disabled_names() == ["read_file", "write_file"]
+
+
+class TestArgumentCoercion:
+    """Models -- local ones especially -- emit non-scalars as JSON STRINGS:
+    {"symbols": "[\\"AAPL\\"]"} instead of {"symbols": ["AAPL"]}. Nothing
+    mis-parses when that happens; the wire really did carry a string. The
+    schema says what was meant, so it gets repaired."""
+
+    SCHEMA = {"properties": {
+        "symbols": {"type": ["null", "array"], "items": {"type": "string"}},
+        "limit": {"type": "number"},
+        "count": {"type": "integer"},
+        "flag": {"type": "boolean"},
+        "opts": {"type": "object"},
+        "pattern": {"type": "string"},
+        "loose": {"anyOf": [{"type": "array"}, {"type": "string"}]},
+    }}
+
+    def _c(self, args):
+        from akshara.tools.base import coerce_arguments
+        return coerce_arguments(args, self.SCHEMA)
+
+    def test_the_reported_failure(self):
+        assert self._c({"symbols": '["AAPL"]'}) == {"symbols": ["AAPL"]}
+
+    def test_nullable_array_still_accepts_null(self):
+        assert self._c({"symbols": None}) == {"symbols": None}
+
+    @pytest.mark.parametrize("args,expected", [
+        ({"limit": "5"}, {"limit": 5}),
+        ({"limit": "2.5"}, {"limit": 2.5}),
+        ({"count": "7"}, {"count": 7}),
+        ({"flag": "true"}, {"flag": True}),
+        ({"flag": "false"}, {"flag": False}),
+        ({"opts": '{"a": 1}'}, {"opts": {"a": 1}}),
+    ])
+    def test_scalars_and_objects_too(self, args, expected):
+        assert self._c(args) == expected
+
+    def test_a_string_typed_param_is_never_reinterpreted(self):
+        """The rule that keeps this honest: a grep pattern that happens to
+        look like JSON must stay the text the caller typed."""
+        assert self._c({"pattern": "[0-9]+"}) == {"pattern": "[0-9]+"}
+        assert self._c({"pattern": '["a"]'}) == {"pattern": '["a"]'}
+
+    def test_a_union_with_string_is_left_alone(self):
+        assert self._c({"loose": "[1]"}) == {"loose": "[1]"}
+
+    def test_unparseable_is_left_for_the_tools_own_complaint(self):
+        assert self._c({"symbols": "AAPL"}) == {"symbols": "AAPL"}
+
+    def test_parsing_to_the_wrong_shape_changes_nothing(self):
+        # '"AAPL"' is valid JSON, but a string -- not the declared array
+        assert self._c({"symbols": '"AAPL"'}) == {"symbols": '"AAPL"'}
+
+    def test_a_bool_does_not_satisfy_a_number(self):
+        assert self._c({"limit": "true"}) == {"limit": "true"}
+
+    def test_keys_the_schema_never_mentions_are_untouched(self):
+        assert self._c({"mystery": "[1]"}) == {"mystery": "[1]"}
+
+    def test_well_formed_arguments_come_back_identical(self):
+        """Identity, not just equality: callers use it to detect repairs."""
+        from akshara.tools.base import coerce_arguments
+        args = {"symbols": ["AAPL"], "limit": 5}
+        assert coerce_arguments(args, self.SCHEMA) is args
+
+    def test_items_inside_an_array_are_repaired_too(self):
+        schema = {"properties": {"rows": {
+            "type": "array", "items": {"type": "object"}}}}
+        from akshara.tools.base import coerce_arguments
+        assert coerce_arguments({"rows": ['{"a": 1}']}, schema) == {
+            "rows": [{"a": 1}]}
+
+    def test_nested_object_properties_are_repaired_too(self):
+        schema = {"properties": {"outer": {"type": "object", "properties": {
+            "inner": {"type": "array"}}}}}
+        from akshara.tools.base import coerce_arguments
+        assert coerce_arguments({"outer": {"inner": "[1]"}}, schema) == {
+            "outer": {"inner": [1]}}
+
+    def test_a_schema_without_properties_is_a_no_op(self):
+        from akshara.tools.base import coerce_arguments
+        args = {"x": "[1]"}
+        assert coerce_arguments(args, {}) is args
+        assert coerce_arguments(args, None) is args
+
+    def test_todo_write_is_the_built_in_that_needed_this(self):
+        """Not an MCP-only problem: a core tool takes an array too."""
+        from akshara.tools import default_registry
+        from akshara.tools.base import coerce_arguments
+        schema = default_registry().get("todo_write").parameters
+        fixed = coerce_arguments(
+            {"items": '[{"task": "x", "status": "pending"}]'}, schema)
+        assert fixed["items"] == [{"task": "x", "status": "pending"}]
