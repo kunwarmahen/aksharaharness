@@ -314,8 +314,8 @@ resolves afresh every launch. An UNSET variable is an error, not an
 empty string:
 
 ```
-mcp server 'vendor': header 'Authorization' references 'VENDOR_TOKEN', which is
-not set in the environment (put it in .env or export it before launching)
+mcp server 'vendor': header 'Authorization' references 'VENDOR_TOKEN',
+which is not set in the environment (put it in .env or export it first)
 ```
 
 Sending `Authorization: Bearer ` instead would earn a 401 that reads
@@ -406,9 +406,9 @@ What is still missing: nothing in the flow, but it is only exercised
 against a fake authorization server in the suite -- 37 tests, with the
 redirect half running on a real socket because a bound port, a `state`
 and a one-shot handler have to agree and a mock would only report that
-they did. The discovery half IS verified against vendor's live
-metadata; the registration and browser halves need somebody's actual
-account.
+they did. The discovery half IS verified against a live commercial
+endpoint; the registration and browser halves need somebody's actual
+account, so they are the operator's to exercise.
 
 Every panel action is a plain endpoint underneath -- `/api/mcp`,
 `/api/mcp/add`, `/api/mcp/toggle`, `/api/mcp/remove` -- so the same
