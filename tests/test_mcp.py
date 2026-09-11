@@ -387,6 +387,10 @@ HTTP_SERVER_BODY = """\
                 msg = self._body()
                 mid = msg.get("id")
                 method = msg.get("method")
+                # before any dispatch: initialize must carry it too
+                with open(f"{out_dir}/auth.jsonl", "a") as fh:
+                    fh.write((self.headers.get("Authorization") or "NONE")
+                             + "\\n")
                 extra = {}
                 if method == "initialize":
                     version = ("1999-01-01" if bad_version
@@ -503,6 +507,85 @@ def http_server(tmp_path: Path):
 
     for proc in started:
         _reap(proc)
+
+
+class TestAuthHeaders:
+    """The HTTP transport's credential slot -- stdio has `env`, and until
+    the spec's OAuth flow exists this is how a bearer token gets sent."""
+
+    def test_headers_ride_every_request_including_initialize(self, tmp_path,
+                                                             http_server):
+        """Over a real socket, like the MCP-Protocol-Version test: a
+        header that a mock would have happily reported present."""
+        base = http_server()
+        cfg = MCPServerConfig(name=base.name, url=base.url,
+                              headers={"Authorization": "Bearer sekrit"})
+        session = MCPHttpSession(cfg, timeout=10.0)
+        try:
+            session.start()
+            session.list_tools()
+        finally:
+            session.close()
+        sent = (tmp_path / "auth.jsonl").read_text().split("\n")
+        sent = [line for line in sent if line]
+        assert sent and all(line == "Bearer sekrit" for line in sent)
+
+    def test_protocol_headers_win_over_configured_ones(self):
+        """A stray Content-Type in someone's config must not break the
+        handshake -- ours go in last, on purpose."""
+        cfg = MCPServerConfig(name="x", url="http://x/mcp",
+                              headers={"Content-Type": "text/plain",
+                                       "X-Trace": "1"})
+        session = MCPHttpSession(cfg)
+        headers = session._headers()
+        assert headers["Content-Type"] == "application/json"
+        assert headers["X-Trace"] == "1"   # ours only override collisions
+
+    def test_env_reference_expands_at_connect(self, monkeypatch):
+        monkeypatch.setenv("AKSHARA_TEST_MCP_TOKEN", "t0ken")
+        cfg = MCPServerConfig(
+            name="x", url="http://x/mcp",
+            headers={"Authorization": "Bearer ${AKSHARA_TEST_MCP_TOKEN}"})
+        session = MCPHttpSession(cfg)
+        assert session._headers()["Authorization"] == "Bearer t0ken"
+
+    def test_unset_reference_is_loud_not_an_empty_bearer(self, monkeypatch):
+        """Silently sending `Bearer ` turns a setup mistake into a 401
+        the user reads as a wrong password."""
+        monkeypatch.delenv("AKSHARA_TEST_MCP_TOKEN", raising=False)
+        cfg = MCPServerConfig(
+            name="x", url="http://x/mcp",
+            headers={"Authorization": "Bearer ${AKSHARA_TEST_MCP_TOKEN}"})
+        with pytest.raises(MCPError, match="AKSHARA_TEST_MCP_TOKEN"):
+            MCPHttpSession(cfg)
+
+    def test_config_file_round_trips_headers(self, tmp_path):
+        cfg_file = tmp_path / "mcp.json"
+        cfg_file.write_text(json.dumps({"servers": {"a": {
+            "url": "http://x/mcp",
+            "headers": {"Authorization": "Bearer ${TOK}"}}}}))
+        (cfg,) = load_mcp_configs(cfg_file)
+        assert cfg.headers == {"Authorization": "Bearer ${TOK}"}
+
+    def test_headers_on_a_stdio_server_are_refused(self, tmp_path):
+        cfg_file = tmp_path / "mcp.json"
+        cfg_file.write_text(json.dumps({"servers": {"a": {
+            "command": "py", "headers": {"Authorization": "x"}}}}))
+        with pytest.raises(MCPError, match="headers.*no 'url'"):
+            load_mcp_configs(cfg_file)
+
+    def test_remembered_file_keeps_the_reference_not_the_secret(self,
+                                                                tmp_path):
+        """The whole point of ${VAR}: .akshara/mcp.json sits in the
+        working directory, so the token must not land in it."""
+        path = tmp_path / "mcp.json"
+        remember_server(MCPServerConfig(
+            name="a", url="http://x/mcp",
+            headers={"Authorization": "Bearer ${TOK}"}), path)
+        text = path.read_text()
+        assert "${TOK}" in text
+        (cfg,) = load_remembered(path)
+        assert cfg.headers == {"Authorization": "Bearer ${TOK}"}
 
 
 class TestHttpTransport:

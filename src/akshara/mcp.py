@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -99,6 +100,13 @@ class MCPServerConfig:
     Exactly one transport: ``command`` spawns a subprocess spoken to over
     newline-delimited stdio; ``url`` points at an HTTP endpoint spoken to
     with Streamable HTTP (POST JSON-RPC, response as JSON or SSE).
+
+    ``headers`` is the HTTP transport's answer to ``env``: stdio servers
+    take their credentials through the child's environment, and this is
+    where an HTTP one takes its ``Authorization``. Values may reference
+    the environment as ``${VAR}``, expanded at CONNECT time -- so a
+    remembered server keeps the placeholder on disk instead of the
+    secret ([notes/09](../../notes/09-mcp.md)).
     """
 
     name: str
@@ -106,6 +114,7 @@ class MCPServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
     url: str | None = None
+    headers: dict[str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -145,12 +154,27 @@ def _configs_from_servers_dict(servers: Any, source: str) -> list[MCPServerConfi
             raise MCPError(f"{source}: server {name!r} 'url' must be a string")
         args = spec.get("args", [])
         env = spec.get("env")
+        headers = spec.get("headers")
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             raise MCPError(f"{source}: server {name!r} 'args' must be strings")
+        if headers is not None:
+            # Loud, not ignored: a header on a stdio server is a
+            # misunderstanding worth correcting, and silently dropping the
+            # credential would surface much later as an unexplained 401.
+            if url is None:
+                raise MCPError(
+                    f"{source}: server {name!r} has 'headers' but no 'url' "
+                    "-- headers are the HTTP transport's credential slot; "
+                    "a stdio server takes 'env' instead")
+            if not isinstance(headers, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str)
+                    for k, v in headers.items()):
+                raise MCPError(f"{source}: server {name!r} 'headers' must "
+                               "map strings to strings")
         configs.append(MCPServerConfig(
             name=name, command=command, args=args,
             env={str(k): str(v) for k, v in env.items()} if env else None,
-            url=url,
+            url=url, headers=dict(headers) if headers else None,
         ))
     return configs
 
@@ -176,6 +200,40 @@ def parse_mcp_text(text: str) -> list[MCPServerConfig]:
     except json.JSONDecodeError as exc:
         raise MCPError(f"pasted config is not valid JSON: {exc}") from None
     return _configs_from_servers_dict(raw.get("servers"), "pasted config")
+
+
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env_refs(value: str, *, server: str, where: str) -> str:
+    """Substitute ``${VAR}`` from the environment, or refuse.
+
+    A credential belongs in the environment, not in a config file that
+    gets committed or a remembered entry that sits in the working
+    directory -- so header values may point at one instead of carrying
+    it. An UNSET variable is an error rather than an empty string: the
+    alternative is sending ``Authorization: Bearer `` and reading the
+    server's 401 as "wrong password" instead of "you never set the
+    variable".
+    """
+    missing: list[str] = []
+
+    def swap(match: re.Match[str]) -> str:
+        name = match.group(1)
+        found = os.environ.get(name)
+        if found is None:
+            missing.append(name)
+            return ""
+        return found
+
+    expanded = _ENV_REF.sub(swap, value)
+    if missing:
+        raise MCPError(
+            f"mcp server {server!r}: {where} references "
+            f"{', '.join(repr(m) for m in missing)}, which "
+            f"{'is' if len(missing) == 1 else 'are'} not set in the "
+            "environment (put it in .env or export it before launching)")
+    return expanded
 
 
 def _require_supported_version(negotiated: str, server_name: str) -> str:
@@ -481,6 +539,11 @@ class MCPHttpSession:
         self._session_id: str | None = None
         self._closed = False
         self._ids = count(1)
+        self._extra_headers = {
+            key: _expand_env_refs(value, server=config.name,
+                                  where=f"header {key!r}")
+            for key, value in (config.headers or {}).items()
+        }
         self._client = httpx.Client(timeout=timeout, transport=transport)
 
     # ---- lifecycle ---------------------------------------------------------
@@ -544,8 +607,13 @@ class MCPHttpSession:
     # ---- plumbing ----------------------------------------------------------
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Accept": "application/json, text/event-stream",
-                   "Content-Type": "application/json"}
+        # Configured headers go in FIRST so the protocol's own can never
+        # be clobbered by one: a stray "Content-Type" or a stale
+        # "MCP-Protocol-Version" in someone's config would otherwise
+        # break the handshake in a way that looks like a server bug.
+        headers = dict(self._extra_headers)
+        headers |= {"Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json"}
         if self._session_id is not None:
             headers["Mcp-Session-Id"] = self._session_id
         if self.protocol_version is not None:
@@ -760,6 +828,10 @@ def remember_server(config: MCPServerConfig, path: Path) -> None:
         spec["url"] = config.url
     if config.env:
         spec["env"] = dict(config.env)
+    if config.headers:
+        # Whatever was configured, verbatim -- so a "${TOKEN}" reference
+        # stays a reference on disk and resolves afresh next launch.
+        spec["headers"] = dict(config.headers)
     data["servers"][config.name] = spec
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")

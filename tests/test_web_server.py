@@ -797,6 +797,13 @@ def test_add_validates_the_field_shape():
     assert client.post("/api/mcp/add",
                        json={"name": "x", "command": "py", "env": {"K": 1}}
                        ).status_code == 400
+    assert client.post("/api/mcp/add",
+                       json={"name": "x", "url": "http://y",
+                             "headers": {"A": 1}}).status_code == 400
+    # headers are the HTTP slot; on stdio they would silently do nothing
+    assert client.post("/api/mcp/add",
+                       json={"name": "x", "command": "py",
+                             "headers": {"A": "b"}}).status_code == 400
 
 
 def test_add_and_remove_refuse_to_race_a_running_turn():

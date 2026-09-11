@@ -273,10 +273,10 @@ refused before anything spawns, with the parser's own complaint
   `http://127.0.0.1:9731/mcp`, or the form will try to run your URL as
   a command.
 
-### Remote servers that want a login will not connect
+### Remote servers that want a token
 
 Public example servers speak to anyone. Commercial ones generally do
-not, and the failure is immediate and total:
+not, and the first failure is immediate and total:
 
 ```
 'vendor' rejected 'initialize': HTTP 401 'authentication required'
@@ -294,15 +294,48 @@ defines for HTTP transports: fetch that metadata document, discover the
 authorization server, register (often dynamically, RFC 7591), send the
 user through an authorization-code + PKCE round trip in a browser,
 exchange the code for an access token, then put
-`Authorization: Bearer …` on every subsequent request. This client
-implements none of it -- `MCPServerConfig` carries `command`, `args`,
-`env` and `url`, and `_headers()` sets only `Accept`, `Content-Type`,
-`Mcp-Session-Id` and `MCP-Protocol-Version`. There is no field a
-credential could travel in, so a 401 here means "not built", not "you
-typed it wrong". Servers that authenticate with a plain bearer token
-are a much smaller lift than the full flow (the metadata above says
-`"bearer_methods_supported": ["header"]`); the full browser dance is
-the part that is genuinely a project.
+`Authorization: Bearer …` on every subsequent request. **The browser
+dance is not built.** What IS built is the last step, which is all most
+servers actually check -- `MCPServerConfig.headers`:
+
+```json
+{"servers": {"vendor": {
+   "url": "https://agent.example.com/mcp/trading",
+   "headers": {"Authorization": "Bearer ${VENDOR_TOKEN}"}}}}
+```
+
+`headers` is the HTTP transport's answer to stdio's `env`: same job,
+same place in the config, refused outright on a server that has no
+`url` (silently dropping a credential would resurface as an
+unexplained 401 an hour later). Bring the token yourself -- from the
+vendor's dashboard, or an OAuth flow you ran elsewhere -- and the
+server is reachable.
+
+**`${VAR}` is expanded from the environment at connect time**, and
+that indirection is the point rather than a convenience. `remember`
+writes `.akshara/mcp.json` into the working directory; storing the
+literal token there would put a live credential one `git add -A` away
+from a public repository. The placeholder is what lands on disk, and it
+resolves afresh every launch. An UNSET variable is an error, not an
+empty string:
+
+```
+mcp server 'vendor': header 'Authorization' references 'VENDOR_TOKEN', which is
+not set in the environment (put it in .env or export it before launching)
+```
+
+Sending `Authorization: Bearer ` instead would earn a 401 that reads
+like a rejected password rather than a variable nobody set.
+
+Configured headers are merged FIRST and the protocol's own go in after,
+so a stray `Content-Type` in somebody's config cannot break the
+handshake in a way that looks like a server bug.
+
+The live proof that the header reaches the wire, against the real
+endpoint above: without it the server says `authentication required`;
+with a deliberately wrong token it says `JWT verification failed`. The
+second error is the server having read the credential and disliked it
+-- which is exactly the state a correct token turns into a session.
 
 Every panel action is a plain endpoint underneath -- `/api/mcp`,
 `/api/mcp/add`, `/api/mcp/toggle`, `/api/mcp/remove` -- so the same
@@ -347,14 +380,11 @@ read the header back off a real socket and assert the pool is closed.
 
 ## Deliberately not built
 
-**Authorization.** The spec's OAuth 2.1 flow for HTTP transports --
-protected-resource metadata discovery, dynamic client registration,
-authorization-code + PKCE, token refresh -- is absent, and so is any
-plainer way to attach a credential: no header field on
-`MCPServerConfig`, nothing in the panel's form. Local and unauthenticated
-servers work; anything commercial answers `401` at `initialize` and
-stops there. This is the gap most likely to meet a reader who tries a
-real-world endpoint, so it leads this list rather than hiding in it.
+**The OAuth 2.1 handshake** for HTTP transports -- protected-resource
+metadata discovery, dynamic client registration, authorization-code +
+PKCE, token refresh. A token you already hold goes in `headers` (above)
+and works today; what is missing is the client GETTING one for you,
+which means a browser round trip and a redirect listener.
 
 Standalone GET stream and RPC batching (see above); resources, prompts,
 and sampling capabilities (tools are the 90% case);

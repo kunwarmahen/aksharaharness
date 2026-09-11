@@ -87,6 +87,8 @@
           <input id="mcp-command" placeholder="command + arguments (e.g. python ~/server.py --port 1)" spellcheck="false">
           <input id="mcp-url" placeholder="http://127.0.0.1:8000/mcp" spellcheck="false" class="hidden">
           <textarea id="mcp-env" rows="2" placeholder="env vars for the server, one KEY=value per line (optional)"></textarea>
+          <textarea id="mcp-headers" rows="2" class="hidden" spellcheck="false"
+            placeholder="http headers, one Name: value per line (optional) — e.g. Authorization: Bearer ${MY_TOKEN}"></textarea>
         </div>
         <div id="mcp-json" class="hidden">
           <textarea id="mcp-json-text" rows="5" spellcheck="false"

@@ -299,7 +299,9 @@ register as `mcp__<server>__<tool>`:
 ```json
 {"servers": {"tiny":  {"command": "python",
                        "args": ["examples/tiny_mcp_server.py"]},
-             "remote": {"url": "http://127.0.0.1:8000/mcp"}}}
+             "remote": {"url": "http://127.0.0.1:8000/mcp"},
+             "paid":   {"url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer ${MY_TOKEN}"}}}}
 ```
 
 ```bash
@@ -310,11 +312,21 @@ python examples/tiny_mcp_server.py --http     # the same server over Streamable 
 Over HTTP every request after the handshake carries the negotiated
 `MCP-Protocol-Version` header (spec 2025-06-18) — strict remote servers
 reject clients that omit it — and a refused version hands the connection
-straight back instead of leaking it. **No authorization**, though: the
-spec's OAuth 2.1 flow is not built and there is no field to carry a
-token, so commercial endpoints answer `401 authentication required` at
-`initialize` and stop there. Local and unauthenticated servers are the
-supported ground ([notes/09](notes/09-mcp.md#deliberately-not-built)).
+straight back instead of leaking it. Servers behind a token take a
+`headers` map — the HTTP transport's answer to stdio's `env` — whose
+values may reference the environment, so the secret never lands in a
+config file:
+
+```json
+{"servers": {"paid": {"url": "https://example.com/mcp",
+                      "headers": {"Authorization": "Bearer ${MY_TOKEN}"}}}}
+```
+
+`${MY_TOKEN}` resolves at connect time (unset ⇒ a named error, never a
+blank `Bearer`), and `remember` stores the placeholder rather than the
+token. The spec's full OAuth 2.1 *handshake* — discovery, dynamic
+registration, PKCE in a browser — is still not built, so bring your own
+token ([notes/09](notes/09-mcp.md#remote-servers-that-want-a-token)).
 
 Servers are runtime furniture, not just startup wiring: `/mcp` lists
 them, `/mcp add NAME URL` (or `NAME COMMAND [ARGS...]`) connects one

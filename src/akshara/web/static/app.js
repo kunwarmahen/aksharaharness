@@ -1038,6 +1038,10 @@ document.querySelectorAll('input[name="mcp-transport"]').forEach((radio) => {
     const http = document.querySelector('input[name="mcp-transport"]:checked').value === "http";
     $("#mcp-command").classList.toggle("hidden", http);
     $("#mcp-url").classList.toggle("hidden", !http);
+    // credentials follow the transport: env reaches a child process,
+    // headers reach a URL. Showing both would invite filling the wrong one.
+    $("#mcp-env").classList.toggle("hidden", http);
+    $("#mcp-headers").classList.toggle("hidden", !http);
   };
 });
 
@@ -1070,8 +1074,16 @@ $("#mcp-submit").onclick = async () => {
         const transport = document.querySelector(
           'input[name="mcp-transport"]:checked').value;
         const b = { name: $("#mcp-name").value, remember };
-        if (transport === "http") b.url = $("#mcp-url").value.trim();
-        else {
+        if (transport === "http") {
+          b.url = $("#mcp-url").value.trim();
+          const headers = {};
+          for (const line of $("#mcp-headers").value.split("\n")) {
+            const i = line.indexOf(":");
+            if (i > 0 && line.slice(0, i).trim())
+              headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+          }
+          if (Object.keys(headers).length) b.headers = headers;
+        } else {
           const parts = splitCommand($("#mcp-command").value);
           if (!parts.length) {
             err.textContent = "enter the command to run";
@@ -1086,7 +1098,7 @@ $("#mcp-submit").onclick = async () => {
           const i = line.indexOf("=");
           if (i > 0 && line.slice(0, i).trim()) env[line.slice(0, i).trim()] = line.slice(i + 1);
         }
-        if (Object.keys(env).length) b.env = env;
+        if (transport !== "http" && Object.keys(env).length) b.env = env;
         return b;
       })();
   if (body === null) return;

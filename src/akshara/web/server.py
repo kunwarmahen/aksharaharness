@@ -813,8 +813,10 @@ def make_app(session: WebSession, static_dir: Path | None = None,
     async def mcp_add(req: Request) -> dict[str, Any]:
         """Connect a new server mid-session. Two shapes:
 
-        * fields -- {name, command|url, args?, env?, remember?}: what the
-          panel's simple form sends;
+        * fields -- {name, command|url, args?, env?, headers?, remember?}:
+          what the panel's simple form sends. ``headers`` is http-only
+          (the stdio equivalent is ``env``) and its values may reference
+          the environment as ``${VAR}``;
         * {config: "<json>"} -- the panel's paste-JSON mode, same
           ``{"servers": {...}}`` syntax as --mcp-config files; may add
           several at once.
@@ -856,6 +858,7 @@ def make_app(session: WebSession, static_dir: Path | None = None,
                                          " or 'url' (http) is required")
             args = body.get("args") or []
             env = body.get("env") or None
+            headers = body.get("headers") or None
             if not isinstance(args, list) or \
                     not all(isinstance(a, str) for a in args):
                 raise HTTPException(400, "args must be a list of strings")
@@ -863,11 +866,20 @@ def make_app(session: WebSession, static_dir: Path | None = None,
                     isinstance(k, str) and isinstance(v, str)
                     for k, v in env.items())):
                 raise HTTPException(400, "env must map strings to strings")
+            if headers is not None and (
+                    not isinstance(headers, dict) or not all(
+                        isinstance(k, str) and isinstance(v, str)
+                        for k, v in headers.items())):
+                raise HTTPException(400,
+                                    "headers must map strings to strings")
+            if headers and url is None:
+                raise HTTPException(400, "headers need a 'url' -- a stdio "
+                                         "server takes 'env' instead")
             attempt(MCPServerConfig(
                 name=name.strip(),
                 command=command if command is None else str(command),
                 args=args, url=url if url is None else str(url),
-                env=env))
+                env=env, headers=headers))
         session.broadcast({"type": "state", **session.state()})
         return {"results": results, **session.state()}
 
