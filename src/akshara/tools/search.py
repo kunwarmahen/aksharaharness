@@ -146,8 +146,12 @@ class Grep(Tool):
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Regular expression to search for."},
-            "path": {"type": "string", "description": "Directory or file to search, relative to sandbox root (default '.')."},
-            "include": {"type": "string", "description": "Regex matched against filenames to filter which files are searched."},
+            "path": {"type": "string",
+                     "description": "Directory or file to search, relative "
+                                    "to sandbox root (default '.')."},
+            "include": {"type": "string",
+                        "description": "Regex matched against filenames to "
+                                       "filter which files are searched."},
             "case_insensitive": {"type": "boolean", "description": "Ignore case (default false)."},
         },
         "required": ["pattern"],

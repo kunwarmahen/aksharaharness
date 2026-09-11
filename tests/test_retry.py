@@ -19,7 +19,7 @@ from conftest import load_fixture
 from akshara.errors import AuthError, ProviderError, RateLimitError
 from akshara.providers.anthropic import AnthropicProvider
 from akshara.providers.base import ProviderSettings
-from akshara.providers.retry import RetryPolicy, connect_with_retries, delay_for
+from akshara.providers.retry import RetryPolicy, delay_for
 from akshara.types import Message, TextBlock
 
 

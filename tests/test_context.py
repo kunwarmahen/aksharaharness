@@ -13,7 +13,6 @@ from conftest import ScriptedProvider, assistant_text
 from akshara.agent import Agent
 from akshara.context import (
     MASK_MARKER,
-    RED,
     compact_history,
     mask_old_results,
     summarizable_span,

@@ -193,7 +193,9 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
         raise SkillError(
             f"missing frontmatter: the file must begin with a {FENCE!r} line "
             f"followed by 'name:' and 'description:'")
-    for end, line in enumerate(lines[1:], start=1):
+    # `end` is read after the loop (lines[1:end]) -- not unused, just
+    # not used INSIDE the body, which is what B007 measures.
+    for end, line in enumerate(lines[1:], start=1):  # noqa: B007
         if line.strip() == FENCE:
             break
     else:

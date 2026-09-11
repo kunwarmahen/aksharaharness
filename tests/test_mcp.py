@@ -275,7 +275,9 @@ class TestLifecycleAndConfig:
     def test_load_mcp_configs(self, tmp_path):
         good = tmp_path / "mcp.json"
         good.write_text(json.dumps({"servers": {
-            "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "fs": {"command": "npx",
+                   "args": ["-y", "@modelcontextprotocol/server-filesystem",
+                            "/tmp"],
                    "env": {"DEBUG": "1"}},
             "tiny": {"command": "python"},
         }}))
@@ -445,7 +447,8 @@ HTTP_SERVER_BODY = """\
 def start_http_server(tmp_path: Path, *argv: str) -> MCPServerConfig:
     script = tmp_path / "fake_http.py"
     script.write_text(textwrap.dedent(HTTP_SERVER_BODY))
-    import subprocess, time
+    import subprocess
+    import time
     proc = subprocess.Popen([sys.executable, str(script), str(tmp_path), *argv],
                             stdout=subprocess.DEVNULL)
     port_file = tmp_path / "port.txt"
@@ -490,7 +493,6 @@ class TestHttpTransport:
         registry = ToolRegistry()
         session, names = register_mcp(registry, cfg, timeout=10.0)
         try:
-            stop_http_server = None
             assert names == ["mcp__tiny__add"]
 
             # tools/call answered over SSE: ping request embedded BEFORE
@@ -499,7 +501,7 @@ class TestHttpTransport:
             assert tool.run({"a": 19, "b": 23}, ToolContext(cwd=tmp_path)) == "42"
 
             # ...proof: the server recorded our ping reply...
-            replies = [json.loads(l) for l in
+            replies = [json.loads(ln) for ln in
                        (tmp_path / "replies.jsonl").read_text().splitlines()]
             pings = [r for r in replies if r.get("id") == 99]
             assert pings and pings[-1].get("result") == {}

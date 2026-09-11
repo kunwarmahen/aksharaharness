@@ -14,7 +14,7 @@ import pytest
 
 from akshara.errors import ToolError
 from akshara.tools import Bash, EditFile, Grep, ListDir, ReadFile, WriteFile
-from akshara.tools.base import ToolContext
+from akshara.tools.base import ToolContext, ToolRegistry
 
 
 @pytest.fixture
@@ -321,8 +321,6 @@ class TestRegistryEnableDisable:
     are never sent, never returned by get(), and restorable mid-session."""
 
     def _registry(self) -> ToolRegistry:
-        from akshara.tools.base import ToolRegistry
-
         registry = ToolRegistry()
         registry.register(ReadFile())
         registry.register(WriteFile())

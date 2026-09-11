@@ -41,7 +41,7 @@ from typing import Any
 import httpx
 
 from akshara.errors import ProviderError
-from akshara.providers.base import Provider, provider_error_for
+from akshara.providers.base import Provider
 from akshara.providers import retry as _retry  # sleeps go through the module attr
 from akshara.providers.openai import _parse_arguments, openai_error_for
 from akshara.providers.retry import (
@@ -609,8 +609,7 @@ def _stream_events(chunks: Iterable[bytes]) -> Iterator[StreamEvent]:
             yield events[0]
             return  # terminal event or [DONE]: stop consuming immediately
         yield from events
-    for event in router.finish():
-        yield event
+    yield from router.finish()
 
 
 async def _astream_events(achunks: AsyncIterator[bytes]) -> AsyncIterator[StreamEvent]:

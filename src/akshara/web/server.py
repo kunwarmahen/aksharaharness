@@ -151,7 +151,7 @@ class WebSession:
         agent.interrupt_check = self._cancel.is_set
 
     @property
-    def channel(self) -> "WebSession":
+    def channel(self) -> WebSession:
         """The ask_user channel: this object (it implements .ask below)."""
         return self
 
@@ -210,7 +210,9 @@ class WebSession:
                 item = pending.answers.get(timeout=0.2)
             except queue.Empty:
                 if self._cancel.is_set():
-                    raise KeyboardInterrupt  # turn-cancel, REPL semantics
+                    # turn-cancel, REPL semantics; the empty poll is
+                    # the timer, not the cause
+                    raise KeyboardInterrupt from None
                 continue
             if item is CANCELLED:
                 raise KeyboardInterrupt

@@ -249,10 +249,10 @@ class Agent:
                 # Record EVERYTHING before yielding anything: a consumer
                 # closing the generator after the first panel must not
                 # lose its batch-mates' real (already computed) results.
-                for call, result in zip(calls, results):
+                for call, result in zip(calls, results, strict=True):
                     batch.append(result)
                     executed[call.id] = result
-                for call, result in zip(calls, results):
+                for call, result in zip(calls, results, strict=True):
                     yield ToolExecuted(call=call, result=result)
                 self.history.append(_batch_message(batch))
 

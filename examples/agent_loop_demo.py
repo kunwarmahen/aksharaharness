@@ -32,7 +32,7 @@ from rich.console import Console
 from akshara.agent import Agent, ToolExecuted, TurnEnd
 from akshara.cli.repl import confirm_gate
 from akshara.config import default_model, load_settings
-from akshara.permissions import allow_read_only, deny_all
+from akshara.permissions import deny_all
 from akshara.providers import get_provider
 from akshara.tools import default_registry
 from akshara.types import (

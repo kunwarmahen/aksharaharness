@@ -594,8 +594,7 @@ def _stream_events(chunks: Iterable[bytes]) -> Iterator[StreamEvent]:
             yield events[0]
             return  # [DONE]: stop consuming immediately
         yield from events
-    for event in router.finish():
-        yield event
+    yield from router.finish()
 
 
 async def _astream_events(achunks: AsyncIterator[bytes]) -> AsyncIterator[StreamEvent]:

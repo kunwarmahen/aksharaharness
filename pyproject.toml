@@ -31,7 +31,7 @@ browse = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.3"]
+dev = ["pytest>=8.3", "ruff>=0.14"]
 
 [build-system]
 requires = ["hatchling"]
@@ -40,7 +40,48 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/akshara"]
 
+[tool.ruff]
+line-length = 100          # the prose here wraps near 79; this is the HARD ceiling
+target-version = "py312"
+# The repair preset's fixture is broken ON PURPOSE (wrong slicing, integer
+# division where a float is promised). pytest already refuses to collect it;
+# the linter has to be told the same thing, or every run reports bugs that
+# are the exercise.
+extend-exclude = ["examples/broken_projects"]
+
+[tool.ruff.lint]
+# Correctness first: F catches undefined names and dead bindings, B the
+# bug-shaped idioms (bare raise inside except, unstrict zip). E/W/UP keep
+# the style honest without reflowing deliberate line breaks. Import
+# ORDER is left alone on purpose -- imports here are grouped to read
+# top-down, and isort would shuffle that for no correctness gain.
+select = ["E", "F", "W", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# A copy-pasteable one-liner in the module docstring: wrapping it would
+# hand the reader a command that no longer runs.
+"examples/tiny_mcp_server.py" = ["E501"]
+
 [tool.pytest.ini_options]
 # Collection stays in tests/ -- examples/broken_projects/ ships DELIBERATELY
 # failing suites (the repair preset's fixture) and must never join the run.
 testpaths = ["tests"]
+# A warning nobody reads is a warning nobody acts on: make them failures,
+# so a deprecation in OUR code surfaces the day it appears rather than the
+# day it becomes an error. The one exemption is starlette telling us its
+# TestClient now prefers httpx2 -- a third-party migration we cannot fix
+# from here, and not worth pulling a second HTTP stack into the dev env
+# when the core ships on httpx alone. Matched by message, not category,
+# so the filter still parses when starlette isn't installed (the [web]
+# extra is optional and test_web_server.py skips without it).
+filterwarnings = [
+    "error",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:",
+    # ResourceWarning stays advisory FOR NOW. Turning it on found a real
+    # one -- background.py leaked the parent's copy of every job log fd,
+    # fixed -- but what is left is test teardown: suites that spawn real
+    # bash jobs and stdio MCP servers and let them outlive the test. That
+    # is a cleanup worth doing on its own, not a reason to leave every
+    # OTHER warning unenforced in the meantime.
+    "ignore::ResourceWarning",
+]

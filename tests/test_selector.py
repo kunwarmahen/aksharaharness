@@ -19,8 +19,7 @@ from akshara.tools.selector import (
     enable_selection,
     query_from_transcript,
 )
-from akshara.types import (Message, ModelResponse, TextBlock, TextDelta,
-                           ToolCall, ToolResult, Usage)
+from akshara.types import (Message, ModelResponse, TextBlock, ToolCall, ToolResult, Usage)
 
 from conftest import ScriptedProvider
 

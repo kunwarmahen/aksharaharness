@@ -34,7 +34,6 @@ from akshara.types import (
     Message,
     ModelResponse,
     StartEvent,
-    TextDelta,
     ToolCall,
     ToolCallDelta,
     ToolCallStart,

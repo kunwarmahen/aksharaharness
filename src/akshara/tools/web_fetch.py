@@ -56,11 +56,12 @@ BLOCK_TAGS = {
 # Client seam: tests swap this for a MockTransport-backed client, so the
 # suite stays offline-green while run() exercises real request/response
 # handling unchanged.
-_client_factory = lambda: httpx.Client(
-    follow_redirects=True,
-    timeout=httpx.Timeout(15.0),
-    headers={"User-Agent": USER_AGENT},
-)
+def _client_factory() -> httpx.Client:
+    return httpx.Client(
+        follow_redirects=True,
+        timeout=httpx.Timeout(15.0),
+        headers={"User-Agent": USER_AGENT},
+    )
 
 
 class _TextExtractor(HTMLParser):

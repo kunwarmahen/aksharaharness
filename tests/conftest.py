@@ -9,12 +9,14 @@ real request-building code path.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import httpx
 import pytest
 
+from akshara import config
 from akshara.providers.base import Provider, ProviderSettings
 from akshara.types import (
     Message,
@@ -38,6 +40,41 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def load_fixture(name: str) -> bytes:
     """Raw fixture bytes -- kept raw so SSE tests can split chunks freely."""
     return (FIXTURES / name).read_bytes()
+
+
+#: Everything a provider or a knob reads straight off the environment.
+#: AKSHARA_* names are swept by prefix instead, so a new knob is covered
+#: the day it is added rather than the day someone remembers this list.
+AMBIENT_VARS = tuple(
+    f"{prefix}_{suffix}"
+    for prefix in ("ANTHROPIC", "OPENAI", "RESPONSES", "OLLAMA")
+    for suffix in ("API_KEY", "AUTH_TOKEN", "BASE_URL", "MODEL",
+                   "CONTEXT_WINDOW")
+)
+
+
+@pytest.fixture(autouse=True)
+def seal_ambient_env(monkeypatch):
+    """Seal every test off from the machine it happens to run on.
+
+    ``_load_dotenv()`` imports ./.env into os.environ ONCE per process,
+    and this repo ships a working .env for its own author -- so a single
+    test reaching that loader hands every LATER test somebody's real
+    keys, model slugs and browser profile. That is how a green suite
+    turns red on one laptop and nowhere else. Latching the loader shut
+    keeps the file out; test_config.py unlatches it in a fixture of its
+    own (module fixtures run after this one) to exercise the parser
+    against .env files it writes into tmp_path itself.
+
+    Exported variables are cleared for the same reason: what the suite
+    asserts must not depend on which keys live in the caller's shell.
+    monkeypatch puts every one of them back when the test ends.
+    """
+    monkeypatch.setattr(config, "_dotenv_loaded", True)
+    for var in AMBIENT_VARS:
+        monkeypatch.delenv(var, raising=False)
+    for var in [v for v in os.environ if v.startswith("AKSHARA_")]:
+        monkeypatch.delenv(var, raising=False)
 
 
 class Recorder:

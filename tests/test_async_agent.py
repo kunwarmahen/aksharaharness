@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from akshara.agent import INTERRUPTED_MESSAGE, ToolExecuted, TurnEnd
+from akshara.agent import ToolExecuted, TurnEnd
 from akshara.async_agent import AsyncAgent
 from akshara.tools.base import Tool, ToolRegistry
 from akshara.types import Message, ModelResponse, TextBlock, ToolCall, ToolResult, Usage

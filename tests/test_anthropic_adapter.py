@@ -34,7 +34,8 @@ def _text_fixture() -> dict:
     return json.loads((FIXTURES / "anthropic_text.json").read_text())
 
 
-def _provider(settings: ProviderSettings, responder, *, retry=None) -> tuple[AnthropicProvider, list]:
+def _provider(settings: ProviderSettings, responder, *,
+              retry=None) -> tuple[AnthropicProvider, list]:
     """Provider on MockTransport + the recorded requests (for assertions).
 
     ``retry`` passes a RetryPolicy straight through -- error-taxonomy
@@ -60,7 +61,8 @@ def _provider(settings: ProviderSettings, responder, *, retry=None) -> tuple[Ant
 
 class TestRequestShape:
     def test_anatomy(self, anthropic_settings):
-        provider, sent = _provider(anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
+        provider, sent = _provider(
+            anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
 
         response = provider.complete(
             messages=[Message("user", [TextBlock("hi")])],
@@ -94,7 +96,8 @@ class TestRequestShape:
         assert response.raw is not None and response.raw["id"].startswith("msg_")
 
     def test_system_prompt_is_toplevel_not_a_message(self, anthropic_settings):
-        provider, sent = _provider(anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
+        provider, sent = _provider(
+            anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
 
         provider.complete(
             messages=[Message("user", [TextBlock("hi")])],
@@ -109,7 +112,8 @@ class TestRequestShape:
         assert all(m["role"] in ("user", "assistant") for m in body["messages"])
 
     def test_tool_blocks_encode_anthropically(self, anthropic_settings):
-        provider, sent = _provider(anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
+        provider, sent = _provider(
+            anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
 
         messages = [
             Message(
@@ -144,7 +148,8 @@ class TestRequestShape:
     def test_tools_encode_with_input_schema(self, anthropic_settings):
         from akshara.types import ToolSpec
 
-        provider, sent = _provider(anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
+        provider, sent = _provider(
+            anthropic_settings, lambda r: httpx.Response(200, json=_text_fixture()))
         spec = ToolSpec(
             name="read_file",
             description="Read a file.",
@@ -305,7 +310,8 @@ class TestErrors:
                                               "message": "boom"}}, ProviderError),
         ],
     )
-    def test_http_status_maps_to_exception_family(self, anthropic_settings, status, payload, expected):
+    def test_http_status_maps_to_exception_family(self, anthropic_settings,
+                                                  status, payload, expected):
         provider, _ = _provider(
             anthropic_settings,
             lambda r: httpx.Response(status, json=payload),

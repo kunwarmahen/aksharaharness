@@ -37,7 +37,7 @@ import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from akshara.agent import Agent
 from akshara.async_agent import AsyncAgent

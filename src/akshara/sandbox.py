@@ -125,7 +125,8 @@ class SubprocessSandbox:
             # directly would race them and often get nothing).
             output, _ = process.communicate()
             raise CommandTimedOut(
-                timeout, output.decode("utf-8", errors="replace").strip())
+                timeout,
+                output.decode("utf-8", errors="replace").strip()) from None
         except BaseException:
             # Ctrl-C (or generator close): the child never saw the
             # interrupt -- kill the group or it outlives the turn.
@@ -198,7 +199,7 @@ class BwrapSandbox:
         ]
         env = _child_env(cwd)
         for key, value in env.items():
-            argv += [f"--setenv", key, value]
+            argv += ["--setenv", key, value]
         argv += [
             "--bind", str(cwd), str(cwd),   # THE writable place
             "--chdir", str(cwd),
@@ -221,7 +222,8 @@ class BwrapSandbox:
             _killpg(process.pid, signal.SIGKILL)
             output, _ = process.communicate()
             raise CommandTimedOut(
-                timeout, output.decode("utf-8", errors="replace").strip())
+                timeout,
+                output.decode("utf-8", errors="replace").strip()) from None
         except BaseException:
             _killpg(process.pid, signal.SIGKILL)
             process.communicate()

@@ -44,7 +44,9 @@ class Bash(Tool):
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "The shell command to run."},
-            "timeout": {"type": "integer", "description": "Seconds before the command is killed (default 30)."},
+            "timeout": {"type": "integer",
+                        "description": "Seconds before the command is "
+                                       "killed (default 30)."},
         },
         "required": ["command"],
         "additionalProperties": False,

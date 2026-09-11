@@ -25,7 +25,7 @@ from rich.prompt import Prompt
 from rich.status import Status
 
 from akshara.agent import Agent
-from akshara.builder import BUILD_SYSTEM, BuildSpec, default_checks, run_build
+from akshara.builder import BUILD_SYSTEM, BuildSpec, run_build
 from akshara.cli.render import Renderer
 from akshara.config import default_model, load_settings
 from akshara.context import RED, estimate_history
@@ -34,7 +34,7 @@ from akshara.images import load_image_block
 from akshara.pricing import session_cost
 from akshara.prompt import recompose
 from akshara.types import ImageBlock
-from akshara.permissions import MODES, PermissionRequest, SwitchableGate, yolo
+from akshara.permissions import PermissionRequest, SwitchableGate, yolo
 from akshara.providers import get_provider
 from akshara.sandbox import ToolSandbox
 from akshara.session import SessionStore, apply_payload
@@ -706,7 +706,7 @@ class Repl:
             switch.set_mode("ask")
             new_mode = "ask"
         else:
-            self.console.print(f"[red]usage: /yolo [on|off][/red]")
+            self.console.print("[red]usage: /yolo [on|off][/red]")
             return
         if new_mode == "yolo":
             self.console.print("[red]yolo ON -- tools run WITHOUT asking; "
@@ -733,7 +733,7 @@ class Repl:
                 ctx.flip(wanted)
             except ValueError:
                 self.console.print(
-                    f"[red]usage: /env [off|local|full][/red]")
+                    "[red]usage: /env [off|local|full][/red]")
                 return
             self.console.print(f"[green]env context -> {ctx.mode}[/green]"
                                " [dim](applies to the next model call)[/dim]")
@@ -924,7 +924,9 @@ class Repl:
                     case ToolResult(tool_call_id=cid, content=c, is_error=e):
                         flag = " [error]" if e else ""
                         preview = c[:200] + ("..." if len(c) > 200 else "")
-                        self.console.print(f"[magenta]tool_result[{cid}]{flag}: {preview}[/magenta]")
+                        self.console.print(
+                            f"[magenta]tool_result[{cid}]{flag}: "
+                            f"{preview}[/magenta]")
                     case ThinkingBlock(thinking=t, signature=s):
                         sig = f" (signed, {len(s)} chars)" if s else ""
                         preview = t[:200] + ("..." if len(t) > 200 else "")

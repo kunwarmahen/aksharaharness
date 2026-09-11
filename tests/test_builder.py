@@ -11,7 +11,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
 
 from akshara.agent import Agent
 from akshara.builder import (
@@ -36,7 +35,7 @@ def _write(call_id: str, path: str, content: str) -> ToolCall:
     return ToolCall(call_id, "write_file", {"path": path, "content": content})
 
 
-def _factory(provider) -> "callable":
+def _factory(provider) -> callable:
     def factory(workspace: Path) -> Agent:
         return Agent(provider, model="scripted", system=BUILD_SYSTEM,
                      tools=default_registry(), permissions=yolo,

@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from akshara.providers.anthropic import AnthropicProvider
-from akshara.providers.base import ProviderSettings, collect
+from akshara.providers.base import collect
 from akshara.providers.openai import OpenAIProvider
 from akshara.providers.responses import ResponsesProvider
 from akshara.types import Message, TextBlock, ToolCall, ToolResult, Usage
@@ -130,9 +130,11 @@ def test_tool_round_trip_request_shapes_diverge_predictably(request):
         settings = request.getfixturevalue(PROVIDERS[provider_name][1])
         sent: list[httpx.Request] = []
 
+        # Both closed-over names are consumed by the .complete() call
+        # below, inside this same iteration -- late binding never bites.
         def handler(r: httpx.Request) -> httpx.Response:
-            sent.append(r)
-            return httpx.Response(200, json=minimal_ok[provider_name])
+            sent.append(r)  # noqa: B023
+            return httpx.Response(200, json=minimal_ok[provider_name])  # noqa: B023
 
         _make(provider_name, settings, handler).complete(
             messages=history, system=None, tools=[], model="m", max_tokens=100,

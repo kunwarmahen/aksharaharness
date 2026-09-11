@@ -250,8 +250,6 @@ class TestConfirmGateEdits:
         # feed: first round 'e' (edit), second round 'y'
         from rich.prompt import Prompt
         answers = iter(["e", "y"])
-        import akshara.cli.repl as repl_mod
-        real_ask = Prompt.ask
         monkeyed = lambda *a, **k: next(answers)  # noqa: E731
 
         import unittest.mock as mock
@@ -418,7 +416,6 @@ class TestToolsCommand:
     def _repl(self):
         from akshara.tools.base import ToolRegistry
         from akshara.tools.fs import ReadFile, WriteFile
-        from akshara.tools.glob import Glob
 
         registry = ToolRegistry()
         registry.register(ReadFile())
@@ -477,7 +474,6 @@ class TestMcpCommand:
 
     @staticmethod
     def _fake_connector(closed_log=None):
-        from akshara.mcp import MCPServerConfig
         from akshara.tools.base import Tool
 
         class FakeSess:

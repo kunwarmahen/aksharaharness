@@ -20,7 +20,8 @@ args without knowing anything about the tool.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 #: The two runtime modes a session can sit in. "ask" defers to whatever
 #: gate the frontend supplied (y/n/e terminal prompt, browser modal);

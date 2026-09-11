@@ -359,12 +359,16 @@ def run_login_session(profile: Path, url: str | None = None) -> None:
     two known walls (missing extra, missing chromium binary); a locked
     profile or other launch failure propagates as ToolError too.
     """
+    # Scheme check FIRST: it costs nothing and needs no browser, so a
+    # file:// URL gets the honest answer whether or not the optional
+    # extra is installed. Behind the import it would masquerade as a
+    # missing dependency on machines without playwright.
+    if url:
+        _require_http(url)
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise ToolError(_BROWSER_EXTRA_HINT) from exc
-    if url:
-        _require_http(url)  # refuse before paying for a launch
     profile.mkdir(parents=True, exist_ok=True)
     pw = sync_playwright().start()
     try:

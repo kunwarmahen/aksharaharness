@@ -303,7 +303,7 @@ class SkillRegistry:
 
     # ---- wiring --------------------------------------------------------------
 
-    def attach(self, agent: Any) -> "SkillRegistry":
+    def attach(self, agent: Any) -> SkillRegistry:
         """Compose the roster onto the agent and register the skill tools.
 
         Idempotent in the way that matters: re-attaching (after a

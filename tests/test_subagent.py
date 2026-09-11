@@ -103,7 +103,7 @@ class TestChildRun:
         agent, spawner = make_agent(script)
         provider = agent.provider
 
-        response = agent.run("Where is the loop defined?")
+        agent.run("Where is the loop defined?")
 
         parent_initial, child_only, parent_final = provider.requests
 

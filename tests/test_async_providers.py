@@ -16,9 +16,7 @@ import pytest
 from akshara.errors import AuthError, ContextOverflowError, ProviderError, RateLimitError
 from akshara.providers.anthropic import AnthropicProvider
 from akshara.providers.base import (
-    ProviderSettings,
     acollect,
-    collect,
 )
 from akshara.providers.fallback import FallbackProvider
 from akshara.providers.openai import OpenAIProvider

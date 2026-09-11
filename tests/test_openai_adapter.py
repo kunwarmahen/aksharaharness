@@ -62,9 +62,10 @@ def _provider(settings: ProviderSettings, responder, *, retry=None) -> tuple[Ope
 
 class TestRequestShape:
     def test_anatomy(self, openai_settings):
-        provider, sent = _provider(openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
+        provider, sent = _provider(
+            openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
 
-        response = provider.complete(
+        provider.complete(
             messages=[Message("user", [TextBlock("hi")])],
             system="Be terse.",
             tools=[],
@@ -98,7 +99,8 @@ class TestRequestShape:
     def test_tool_results_fan_out_into_role_tool_messages(self, openai_settings):
         """THE structural difference from Anthropic: one internal user
         Message becomes SEVERAL wire messages."""
-        provider, sent = _provider(openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
+        provider, sent = _provider(
+            openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
 
         messages = [
             Message("assistant", [
@@ -128,7 +130,8 @@ class TestRequestShape:
                            "content": "ERROR: nope"}  # no is_error flag: marked in text
 
     def test_tools_encode_wrapped_in_function(self, openai_settings):
-        provider, sent = _provider(openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
+        provider, sent = _provider(
+            openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
         spec = ToolSpec(name="read_file", description="Read a file.",
                         parameters={"type": "object", "properties": {"path": {"type": "string"}}})
         provider.complete(messages=[Message("user", [TextBlock("x")])], system=None,
@@ -150,7 +153,8 @@ class TestRequestShape:
 
 class TestResponseParsing:
     def test_text_response(self, openai_settings):
-        provider, _ = _provider(openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
+        provider, _ = _provider(
+            openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_text.json")))
 
         response = provider.complete(messages=[Message("user", [TextBlock("x")])], system=None,
                                      tools=[], model="m", max_tokens=100)
@@ -160,13 +164,15 @@ class TestResponseParsing:
         assert (response.usage.input_tokens, response.usage.output_tokens) == (17, 9)
 
     def test_null_content_plus_tool_calls(self, openai_settings):
-        provider, _ = _provider(openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_tool_use.json")))
+        provider, _ = _provider(
+            openai_settings, lambda r: httpx.Response(200, json=_fixture("openai_tool_use.json")))
 
         response = provider.complete(messages=[Message("user", [TextBlock("x")])], system=None,
                                      tools=[], model="m", max_tokens=100)
 
         calls = response.message.tool_calls()
-        assert [(c.id, c.name) for c in calls] == [("call_001", "read_file"), ("call_002", "list_dir")]
+        assert [(c.id, c.name) for c in calls] == [
+            ("call_001", "read_file"), ("call_002", "list_dir")]
         assert calls[0].arguments == {"path": "README.md"}  # parsed dict, not string
         assert response.stop_reason == "tool_use"
 

@@ -108,7 +108,8 @@ class TestFsIntegration:
         assert "out" not in result  # blocked behind the sibling...
         ctx.leases.release(file_lease_key(target.resolve()), "sibling")
         thread.join(timeout=2)
-        assert "edited" not in str(result) and result.get("out", "").startswith(("created", "overwrote"))
+        assert "edited" not in str(result)
+        assert result.get("out", "").startswith(("created", "overwrote"))
         assert target.read_text() == "new"
 
     def test_conflicting_edits_serialize_via_shared_context(self, tmp_path):

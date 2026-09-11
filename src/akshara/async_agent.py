@@ -210,10 +210,10 @@ class AsyncAgent:
                 # Record EVERYTHING before yielding anything: a consumer
                 # abandoning the turn after the first panel must not lose
                 # its batch-mates' real (already computed) results.
-                for call, result in zip(calls, results):
+                for call, result in zip(calls, results, strict=True):
                     batch.append(result)
                     executed[call.id] = result
-                for call, result in zip(calls, results):
+                for call, result in zip(calls, results, strict=True):
                     yield ToolExecuted(call=call, result=result)
                 self.history.append(_batch_message(batch))
 
@@ -366,7 +366,7 @@ class AsyncAgent:
         # failed. The work HAPPENED; history says so.
         calls_by_index = dict(pending)
         outcomes = await inner
-        for i, outcome in zip(tasks, outcomes):
+        for i, outcome in zip(tasks, outcomes, strict=True):
             if isinstance(outcome, BaseException):
                 results[i] = ToolResult(
                     calls_by_index[i].id,

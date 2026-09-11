@@ -60,7 +60,9 @@ class ReadFile(Tool):
         "properties": {
             "path": {"type": "string", "description": "File path, relative to the sandbox root."},
             "offset": {"type": "integer", "description": "1-based first line to read (default 1)."},
-            "limit": {"type": "integer", "description": f"Max lines to read (default {MAX_READ_LINES})."},
+            "limit": {"type": "integer",
+                      "description": f"Max lines to read "
+                                     f"(default {MAX_READ_LINES})."},
         },
         "required": ["path"],
         "additionalProperties": False,
@@ -90,14 +92,16 @@ class ReadFile(Tool):
         lines = text.splitlines()
         window = lines[offset - 1 : offset - 1 + limit]
         if not window:
-            return f"[no lines in range {offset}..{offset + limit - 1}; file has {len(lines)} lines]"
+            return (f"[no lines in range {offset}..{offset + limit - 1}; "
+                    f"file has {len(lines)} lines]")
 
         numbered = [f"{offset + i:>6}\t{line}" for i, line in enumerate(window)]
         result = "\n".join(numbered)
         if len(data) > MAX_READ_BYTES:
             result += f"\n[truncated: file is {len(data)} bytes, read capped at {MAX_READ_BYTES}]"
         if offset - 1 + limit < len(lines):
-            result += f"\n[{len(lines) - (offset - 1 + limit)} more lines; increase limit or use offset]"
+            result += (f"\n[{len(lines) - (offset - 1 + limit)} more lines; "
+                       f"increase limit or use offset]")
         return result
 
 
@@ -110,7 +114,9 @@ class ListDir(Tool):
     parameters: ClassVar[dict] = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Directory path, relative to sandbox root (default '.')."},
+            "path": {"type": "string",
+                     "description": "Directory path, relative to sandbox "
+                                    "root (default '.')."},
         },
         "additionalProperties": False,
     }
@@ -187,7 +193,9 @@ class EditFile(Tool):
             "path": {"type": "string", "description": "File path, relative to sandbox root."},
             "old_string": {"type": "string", "description": "Exact text to find."},
             "new_string": {"type": "string", "description": "Replacement text."},
-            "replace_all": {"type": "boolean", "description": "Replace every occurrence (default false)."},
+            "replace_all": {"type": "boolean",
+                            "description": "Replace every occurrence "
+                                           "(default false)."},
         },
         "required": ["path", "old_string", "new_string"],
         "additionalProperties": False,

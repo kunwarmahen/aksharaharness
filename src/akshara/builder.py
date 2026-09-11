@@ -195,7 +195,8 @@ def run_build(agent_factory: Callable[[Path], Agent],
     resumable by the loop itself; callers decide their own exit code.
     """
     workspace.mkdir(parents=True, exist_ok=True)
-    seeded = _seed(workspace, spec.seed_dir) if spec.seed_dir else 0
+    if spec.seed_dir:
+        _seed(workspace, spec.seed_dir)
     test_hashes = _checksum_tests(workspace) if spec.checksum_tests else {}
 
     def verify() -> tuple[list[CheckOutcome], list[str]]:

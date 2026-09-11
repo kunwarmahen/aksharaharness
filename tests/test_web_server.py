@@ -11,7 +11,6 @@ POST /api/message, then drain envelopes until turn_done.
 
 from __future__ import annotations
 
-import base64
 
 import pytest
 
@@ -26,7 +25,7 @@ from akshara.providers.base import ProviderSettings  # noqa: E402
 from akshara.session import SessionStore  # noqa: E402
 from akshara.tools.ask_user import AskUser  # noqa: E402
 from akshara.tools.base import Tool, ToolRegistry  # noqa: E402
-from akshara.types import Message, ModelResponse, TextBlock, Usage  # noqa: E402
+from akshara.types import Message, ModelResponse, TextBlock  # noqa: E402
 from akshara.web.server import WebSession, make_app  # noqa: E402
 
 
@@ -288,7 +287,7 @@ def test_cancel_while_ask_pending_cancels_turn_but_session_lives():
     with client.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "state"
         assert client.post("/api/message", json={"text": "go"}).status_code == 200
-        ask = next(e for e in drain_until(ws, {"ask"}) if e["type"] == "ask")
+        next(e for e in drain_until(ws, {"ask"}) if e["type"] == "ask")
         ws.send_json({"type": "cancel"})
 
         envelopes = drain_until(ws, {"turn_done"})

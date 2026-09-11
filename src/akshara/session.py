@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 
 from akshara.types import (
@@ -77,23 +77,6 @@ class SessionStore:
 
     def save(self, agent, *, provider_name: str, session_id: str = "default") -> int:
         """Snapshot ``agent`` as the next version; returns its version number."""
-        latest = self.latest_version(session_id)
-        payload = {
-            "format": 1,
-            "provider": provider_name,
-            "model": agent.model,
-            "system": agent.system,
-            "max_iterations": agent.max_iterations,
-            "total_usage": {
-                "input_tokens": agent.total_usage.input_tokens,
-                "output_tokens": agent.total_usage.output_tokens,
-                "cache_read_tokens": agent.total_usage.cache_read_tokens,
-                "cache_write_tokens": agent.total_usage.cache_write_tokens,
-            },
-            "history": [_dump_message(m) for m in agent.history],
-        }
-    def save(self, agent, *, provider_name: str, session_id: str = "default") -> int:
-        """Snapshot ``agent`` as the next version; returns its version number."""
         with self._lock:
             payload = {
                 "format": 1,
@@ -114,7 +97,7 @@ class SessionStore:
                 "INSERT INTO checkpoints (session_id, version, created_at, payload) "
                 "VALUES (?, ?, ?, ?)",
                 (session_id, latest + 1,
-                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 datetime.now(UTC).isoformat(timespec="seconds"),
                  json.dumps(payload)),
             )
             self._db.commit()

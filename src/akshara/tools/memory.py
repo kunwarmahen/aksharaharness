@@ -53,7 +53,8 @@ class NoteStore:
             return {}
         except json.JSONDecodeError as exc:
             raise ToolError(
-                f"memory store corrupted ({exc}); fix or delete {self.path}")
+                f"memory store corrupted ({exc}); "
+                f"fix or delete {self.path}") from None
 
     def _save(self, notes: dict[str, str]) -> None:
         # write temp + os.replace: a crash mid-write leaves the previous

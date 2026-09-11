@@ -61,7 +61,7 @@ class ToolResult:
     #: cannot carry an image inside a role:"tool" payload at all.
     #: Adapters never read this field; they only ever see the hoisted
     #: ImageBlocks, through their ordinary user-message encoding path.
-    images: list["ImageBlock"] = field(default_factory=list)
+    images: list[ImageBlock] = field(default_factory=list)
 
 
 @dataclass(slots=True)

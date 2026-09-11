@@ -165,7 +165,7 @@ class ToolCatalog:
             if name in by_name:
                 chosen[name] = by_name[name]
 
-        ranked = sorted(zip(self.scores(query), self.tools),
+        ranked = sorted(zip(self.scores(query), self.tools, strict=True),
                         key=lambda pair: pair[0], reverse=True)
         for score, tool in ranked:
             if not self._visible(tool):

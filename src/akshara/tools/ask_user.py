@@ -32,7 +32,8 @@ the same UI is coherent, and needs no extra wiring.
 
 from __future__ import annotations
 
-from typing import Any, Callable, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
+from collections.abc import Callable
 
 from akshara.errors import ToolError, UserUnavailable
 from akshara.tools.base import Tool, ToolContext

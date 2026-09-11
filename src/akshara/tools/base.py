@@ -79,7 +79,7 @@ class Tool(ABC):
         previews resolve paths exactly like execution will."""
 
     @abstractmethod
-    def run(self, args: dict[str, Any], ctx: ToolContext) -> "str | ToolOutput":
+    def run(self, args: dict[str, Any], ctx: ToolContext) -> str | ToolOutput:
         """Execute; return output as a string -- or a ToolOutput when the
         result carries images alongside the text."""
 

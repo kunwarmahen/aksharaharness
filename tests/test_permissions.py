@@ -23,7 +23,7 @@ from akshara.permissions import (
     yolo,
 )
 from akshara.tools.base import Tool, ToolRegistry
-from akshara.types import Message, ModelResponse, ToolCall, ToolResult
+from akshara.types import Message, ModelResponse, ToolCall
 
 
 class ReaderTool(Tool):

@@ -191,7 +191,7 @@ class TestTrustSandbox:
 
     def test_unconfined_sandbox_delegates_everything(self):
         inner_calls: list[str] = []
-        inner = lambda r: inner_calls.append(r.tool_name) or True
+        inner = lambda r: inner_calls.append(r.tool_name) or True  # noqa: E731
         gate = trust_sandbox(inner, _FakeSandbox(confined=False))
         assert gate(_request("bash")) is True
         assert inner_calls == ["bash"]  # convenience confinement earns nothing

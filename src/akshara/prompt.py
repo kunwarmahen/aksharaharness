@@ -105,7 +105,7 @@ class SystemPrompt:
 
     # ---- wiring ------------------------------------------------------------
 
-    def attach(self, agent: Any) -> "SystemPrompt":
+    def attach(self, agent: Any) -> SystemPrompt:
         """Bind to an agent and compose immediately. Prefer attach_prompt."""
         self._agent = agent
         setattr(agent, PROMPT_ATTR, self)

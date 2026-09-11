@@ -63,10 +63,10 @@ def full_history() -> list[Message]:
 
 def assert_histories_equal(left, right) -> None:
     assert len(left) == len(right)
-    for lm, rm in zip(left, right):
+    for lm, rm in zip(left, right, strict=True):
         assert lm.role == rm.role
         assert len(lm.content) == len(rm.content)
-        for lb, rb in zip(lm.content, rm.content):
+        for lb, rb in zip(lm.content, rm.content, strict=True):
             assert lb == rb, f"{type(lb).__name__} mismatch"
 
 

@@ -90,14 +90,18 @@ class JobManager:
             log_path = log_dir / f"{job_id}.log"
             # append mode: a restarted harness writing the same path can't
             # clobber evidence of what the first run did
-            process = _popen(
-                ["bash", "-c", command],
-                cwd=cwd,
-                stdout=open(log_path, "ab"),
-                stderr=subprocess.STDOUT,
-                env=_child_env(cwd),
-                start_new_session=True,  # own group: kill takes the tree
-            )
+            # The child gets its own dup of this descriptor, so the
+            # parent's copy is dead weight the moment Popen returns --
+            # left open it leaks one fd per job for the whole session.
+            with open(log_path, "ab") as log:
+                process = _popen(
+                    ["bash", "-c", command],
+                    cwd=cwd,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=_child_env(cwd),
+                    start_new_session=True,  # own group: kill takes the tree
+                )
             job = Job(job_id, command, process, log_path, time.monotonic())
             self._jobs[job_id] = job
             return job

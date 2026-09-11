@@ -70,7 +70,7 @@ class TestOrdering:
         for i in range(5):
             touch(tmp_path / f"f{i}.py", mtime=base + i)
         out = Glob().run({"pattern": "*.py", "limit": 2}, ctx)
-        lines = [l for l in out.splitlines() if not l.startswith("[")]
+        lines = [ln for ln in out.splitlines() if not ln.startswith("[")]
         assert len(lines) == 2
         assert lines[0] == "f4.py" and lines[1] == "f3.py"
         assert "of 5 matches" in out

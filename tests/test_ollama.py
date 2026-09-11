@@ -18,7 +18,6 @@ from akshara.config import (
     load_settings,
 )
 from akshara.providers import get_provider
-from akshara.providers.ollama import OllamaProvider
 from akshara.providers.openai import OpenAIProvider
 from akshara.types import Message, TextBlock
 

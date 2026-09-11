@@ -24,10 +24,8 @@ from akshara.providers.base import ProviderSettings, acollect, collect
 from akshara.providers.openai import OpenAIProvider
 from akshara.types import (
     Message,
-    ModelResponse,
     TextBlock,
     ToolSpec,
-    Usage,
 )
 
 TOOLS = [ToolSpec(name="echo", description="repeat", parameters={"type": "object"})]

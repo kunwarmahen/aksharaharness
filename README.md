@@ -712,7 +712,8 @@ end ([notes/03](notes/03-sse-and-collect.md)).
 ## Run & test
 
 ```bash
-uv run pytest -q                 # full offline suite: 681 tests, NO network, NO key
+uv run pytest -q                 # full offline suite: 866 tests, NO network, NO key
+uv run ruff check .              # lint: correctness rules, not style policing
 
 # everything below makes REAL model calls -- it needs a key in .env (auto-loaded):
 uv run python examples/one_shot.py "Why is the sky blue?"
@@ -742,7 +743,7 @@ result-encoding shape on the second request.
 
 ## Tested
 
-`uv run pytest -q` — 848 offline tests against byte-exact SSE/JSON
+`uv run pytest -q` — 866 offline tests against byte-exact SSE/JSON
 fixtures (`httpx.MockTransport`) and a `ScriptedProvider` loop: no
 network, no key. Retries are exercised offline too, against flaky
 mock transports whose policy path is identical to the live one. The
@@ -751,6 +752,20 @@ real routes against scripted turns — and web_fetch does the same trick
 with a mocked transport behind its real request path. The browser_*
 family goes further and stays green in BOTH worlds: without playwright
 (fakes carry the session) and with the extra synced.
+
+The suite is sealed off from the machine it runs on: a `conftest.py`
+fixture latches the `.env` loader shut and clears every `AKSHARA_*` and
+provider variable, so the result never depends on whose keys happen to
+be lying around. Warnings are failures (`filterwarnings = ["error"]`),
+which is how a leaked file descriptor per background job got caught —
+`ResourceWarning` is the one exemption still pending a test-teardown
+cleanup.
+
+`uv run ruff check .` lints on a deliberately narrow rule set — `F`/`B`
+for the bug-shaped mistakes, `E`/`W`/`UP` to keep the style honest.
+Import ORDER is left alone: imports here are grouped to read top-down,
+and shuffling them alphabetically would cost readability for no
+correctness gain.
 
 Everything above has also been exercised against real providers —
 all three dialects via OpenRouter (cloud models) plus local Ollama

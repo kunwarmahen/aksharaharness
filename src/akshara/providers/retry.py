@@ -41,7 +41,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from akshara.errors import ProviderError, RateLimitError
+from akshara.errors import RateLimitError
 
 RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 

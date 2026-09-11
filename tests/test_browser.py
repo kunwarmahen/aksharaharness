@@ -39,7 +39,7 @@ def ctx(tmp_path) -> ToolContext:
 
 
 class FakeLocator:
-    def __init__(self, page: "FakePage", selector: str) -> None:
+    def __init__(self, page: FakePage, selector: str) -> None:
         self.page = page
         self.selector = selector
 

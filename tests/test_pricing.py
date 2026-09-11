@@ -13,7 +13,7 @@ import json
 import pytest
 from rich.console import Console
 
-from conftest import ScriptedProvider, assistant_text
+from conftest import ScriptedProvider
 
 from akshara.agent import Agent, TurnEnd
 from akshara.cli.render import Renderer
@@ -225,13 +225,13 @@ def test_streaming_usage_chunk_gets_same_subtraction():
     from akshara.providers.openai import OpenAIProvider
     from akshara.providers.base import ProviderSettings
     sse = (
-        'data: {"model":"gpt-4o-mini","choices":[{"index":0,'
-        '"delta":{"content":"hi"}}]}\n\n'
-        'data: {"model":"gpt-4o-mini","choices":[],'
-        '"usage":{"prompt_tokens":1000,"completion_tokens":7,'
-        '"prompt_tokens_details":{"cached_tokens":400}}}\n\n'
-        "data: [DONE]\n\n"
-    ).encode()
+        b'data: {"model":"gpt-4o-mini","choices":[{"index":0,'
+        b'"delta":{"content":"hi"}}]}\n\n'
+        b'data: {"model":"gpt-4o-mini","choices":[],'
+        b'"usage":{"prompt_tokens":1000,"completion_tokens":7,'
+        b'"prompt_tokens_details":{"cached_tokens":400}}}\n\n'
+        b"data: [DONE]\n\n"
+    )
     provider = OpenAIProvider(
         ProviderSettings(api_key="k", base_url="http://mock.local/v1"),
         transport=httpx.MockTransport(
