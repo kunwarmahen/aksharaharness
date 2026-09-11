@@ -757,9 +757,13 @@ The suite is sealed off from the machine it runs on: a `conftest.py`
 fixture latches the `.env` loader shut and clears every `AKSHARA_*` and
 provider variable, so the result never depends on whose keys happen to
 be lying around. Warnings are failures (`filterwarnings = ["error"]`),
-which is how a leaked file descriptor per background job got caught —
-`ResourceWarning` is the one exemption still pending a test-teardown
-cleanup.
+`ResourceWarning` included — which is what keeps descriptors and child
+processes honest. Enforcing it caught three leaks that had been quietly
+accumulating: the parent's copy of every background job's log fd, the
+read pipe behind every MCP stdio server, and a `SIGKILL` with no
+`wait()` after it. Test teardown moved into fixtures on the same pass,
+so a suite that spawns real bash jobs and real servers can no longer
+leave them running past the test that asked for them.
 
 `uv run ruff check .` lints on a deliberately narrow rule set — `F`/`B`
 for the bug-shaped mistakes, `E`/`W`/`UP` to keep the style honest.

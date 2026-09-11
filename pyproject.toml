@@ -68,7 +68,10 @@ select = ["E", "F", "W", "B", "UP"]
 testpaths = ["tests"]
 # A warning nobody reads is a warning nobody acts on: make them failures,
 # so a deprecation in OUR code surfaces the day it appears rather than the
-# day it becomes an error. The one exemption is starlette telling us its
+# day it becomes an error. ResourceWarning is enforced too, which is what
+# keeps descriptors and child processes honest -- it has already caught a
+# leaked job-log fd, an MCP read pipe nobody closed, and a SIGKILL with no
+# wait() behind it. The one exemption is starlette telling us its
 # TestClient now prefers httpx2 -- a third-party migration we cannot fix
 # from here, and not worth pulling a second HTTP stack into the dev env
 # when the core ships on httpx alone. Matched by message, not category,
@@ -77,11 +80,4 @@ testpaths = ["tests"]
 filterwarnings = [
     "error",
     "ignore:Using `httpx` with `starlette.testclient` is deprecated:",
-    # ResourceWarning stays advisory FOR NOW. Turning it on found a real
-    # one -- background.py leaked the parent's copy of every job log fd,
-    # fixed -- but what is left is test teardown: suites that spawn real
-    # bash jobs and stdio MCP servers and let them outlive the test. That
-    # is a cleanup worth doing on its own, not a reason to leave every
-    # OTHER warning unenforced in the meantime.
-    "ignore::ResourceWarning",
 ]

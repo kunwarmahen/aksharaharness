@@ -9,8 +9,10 @@ exercised on the real transport, not mocked away.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -444,37 +446,63 @@ HTTP_SERVER_BODY = """\
 """
 
 
-def start_http_server(tmp_path: Path, *argv: str) -> MCPServerConfig:
-    script = tmp_path / "fake_http.py"
-    script.write_text(textwrap.dedent(HTTP_SERVER_BODY))
-    import subprocess
-    import time
-    proc = subprocess.Popen([sys.executable, str(script), str(tmp_path), *argv],
-                            stdout=subprocess.DEVNULL)
-    port_file = tmp_path / "port.txt"
-    for _ in range(100):  # up to ~5s for bind+write
-        if port_file.exists():
-            break
-        if proc.poll() is not None:
-            raise AssertionError("http fake server died during startup")
-        time.sleep(0.05)
-    else:
+def _reap(proc: subprocess.Popen) -> None:
+    """SIGTERM, then SIGKILL -- and wait() after BOTH.
+
+    A kill() without a wait() leaves the child unreaped: Python notices
+    at GC time and complains that the subprocess is still running, which
+    is both true and nobody's fault but ours.
+    """
+    if proc.poll() is not None:
+        proc.wait()  # already dead: collect the status, don't zombie it
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
         proc.kill()
-        raise AssertionError("http fake server never reported its port")
-    port = int(port_file.read_text().strip())
-    assert proc.poll() is None
-    start_http_server.proc = proc  # stash for cleanup via wait_for_port_close
-    return MCPServerConfig(name="tiny", url=f"http://127.0.0.1:{port}/mcp")
+        proc.wait()
 
 
-def stop_http_server() -> None:
-    proc = getattr(start_http_server, "proc", None)
-    if proc is not None and proc.poll() is None:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except Exception:
-            proc.kill()
+@pytest.fixture
+def http_server(tmp_path: Path):
+    """Spawn the fake HTTP MCP server; reaped when the test ends.
+
+    Teardown belongs to the fixture, not to each test: the hand-rolled
+    version stashed one process on a function attribute and trusted
+    every caller to remember a stop_http_server() in its finally --
+    three of the six tests here did not, leaving a real python process
+    and its bound port alive for the rest of the session. A fixture
+    cannot be forgotten, and it tracks EVERY server a test starts
+    rather than only the most recent one.
+    """
+    started: list[subprocess.Popen] = []
+
+    def start(*argv: str) -> MCPServerConfig:
+        script = tmp_path / "fake_http.py"
+        script.write_text(textwrap.dedent(HTTP_SERVER_BODY))
+        proc = subprocess.Popen(
+            [sys.executable, str(script), str(tmp_path), *argv],
+            stdout=subprocess.DEVNULL)
+        started.append(proc)
+        port_file = tmp_path / "port.txt"
+        for _ in range(100):  # up to ~5s for bind+write
+            if port_file.exists():
+                break
+            if proc.poll() is not None:
+                raise AssertionError("http fake server died during startup")
+            time.sleep(0.05)
+        else:
+            raise AssertionError("http fake server never reported its port")
+        port = int(port_file.read_text().strip())
+        assert proc.poll() is None
+        return MCPServerConfig(name="tiny",
+                               url=f"http://127.0.0.1:{port}/mcp")
+
+    yield start
+
+    for proc in started:
+        _reap(proc)
 
 
 class TestHttpTransport:
@@ -488,8 +516,9 @@ class TestHttpTransport:
         with pytest.raises(MCPError, match="'command' \\(stdio\\) or 'url'"):
             load_mcp_configs(cfg_file)
 
-    def test_handshake_discovery_and_sse_tool_call(self, tmp_path):
-        cfg = start_http_server(tmp_path)
+    def test_handshake_discovery_and_sse_tool_call(self, tmp_path,
+                                                   http_server):
+        cfg = http_server()
         registry = ToolRegistry()
         session, names = register_mcp(registry, cfg, timeout=10.0)
         try:
@@ -512,19 +541,20 @@ class TestHttpTransport:
         finally:
             session.close()
 
-    def test_unsupported_version_refused(self, tmp_path):
-        cfg = start_http_server(tmp_path, "bad")
+    def test_unsupported_version_refused(self, http_server):
+        cfg = http_server("bad")
         with pytest.raises(MCPError, match="unsupported protocol version"):
             from akshara.mcp import connect_mcp
             connect_mcp(cfg, timeout=5.0)
 
-    def test_subsequent_requests_carry_the_negotiated_version(self, tmp_path):
+    def test_subsequent_requests_carry_the_negotiated_version(self, tmp_path,
+                                                              http_server):
         """Spec 2025-06-18: every request AFTER initialize must send
         MCP-Protocol-Version. Without it a strict server may answer with
         2025-03-26 semantics -- or refuse outright -- which looks like a
         broken client for reasons no error message explains. initialize
         itself cannot carry it: nothing is negotiated yet."""
-        cfg = start_http_server(tmp_path)
+        cfg = http_server()
         registry = ToolRegistry()
         session, _ = register_mcp(registry, cfg, timeout=10.0)
         try:
@@ -535,33 +565,26 @@ class TestHttpTransport:
             assert all(v == session.protocol_version for v in versions)
         finally:
             session.close()
-            stop_http_server()
 
-    def test_refused_version_hands_back_the_connection_pool(self, tmp_path):
+    def test_refused_version_hands_back_the_connection_pool(self, http_server):
         """A refused handshake must close the transport, exactly as the
         stdio session reaps its child on the same path."""
-        cfg = start_http_server(tmp_path, "bad")
+        cfg = http_server("bad")
         session = MCPHttpSession(cfg, timeout=5.0)
-        try:
-            with pytest.raises(MCPError, match="unsupported protocol version"):
-                session.start()
-            assert session._client.is_closed  # no leaked socket pool
-        finally:
-            stop_http_server()
+        with pytest.raises(MCPError, match="unsupported protocol version"):
+            session.start()
+        assert session._client.is_closed  # no leaked socket pool
 
-    def test_close_is_idempotent(self, tmp_path):
+    def test_close_is_idempotent(self, http_server):
         """Same contract as MCPSession.close. httpx raises RuntimeError --
         not a TransportError -- when you send on a closed client, so an
         unguarded second close would blow up inside shutdown paths."""
-        cfg = start_http_server(tmp_path)
+        cfg = http_server()
         session = MCPHttpSession(cfg, timeout=10.0)
-        try:
-            session.start()
-            session.close()
-            session.close()  # must not raise
-            assert not session.healthy()
-        finally:
-            stop_http_server()
+        session.start()
+        session.close()
+        session.close()  # must not raise
+        assert not session.healthy()
 
     def test_unreachable_url_is_an_mcperror_not_a_traceback(self):
         from akshara.mcp import connect_mcp
@@ -569,8 +592,8 @@ class TestHttpTransport:
         with pytest.raises(MCPError, match="unreachable"):
             connect_mcp(dead, timeout=2.0)
 
-    def test_full_agent_loop_over_http(self, tmp_path):
-        cfg = start_http_server(tmp_path)
+    def test_full_agent_loop_over_http(self, tmp_path, http_server):
+        cfg = http_server()
         registry = ToolRegistry()
         session, _ = register_mcp(registry, cfg, timeout=10.0)
         try:

@@ -305,8 +305,18 @@ class MCPSession:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait()  # SIGKILL can't be caught -- reap, or it zombies
         if self._reader is not None:
             self._reader.join(timeout=1)
+        # stdout is a PIPE we opened: closing the child does NOT close our
+        # end, so without this every server costs a descriptor for the life
+        # of the harness. Last, after the reader has drained, so the thread
+        # sees EOF rather than an fd yanked mid-read.
+        try:
+            if proc.stdout and not proc.stdout.closed:
+                proc.stdout.close()
+        except OSError:
+            pass
 
     def healthy(self) -> bool:
         """Cheap liveness probe for status displays: the child process

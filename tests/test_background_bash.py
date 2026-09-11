@@ -7,7 +7,9 @@ regression fails the test instead of hanging it.
 
 from __future__ import annotations
 
+import subprocess
 import time
+from collections.abc import Iterator
 
 import pytest
 
@@ -23,8 +25,26 @@ def ctx(tmp_path) -> ToolContext:
 
 
 @pytest.fixture
-def jobs() -> JobManager:
-    return JobManager()
+def jobs() -> Iterator[JobManager]:
+    """A manager whose jobs are reaped when the test ends.
+
+    Several tests here assert on a job while it is still RUNNING (that
+    is the point of `sleep 30`), and a few remembered to kill it
+    afterwards while others did not. The survivors outlived the whole
+    session as real processes, surfacing much later as "subprocess N is
+    still running" against whichever unlucky test was in flight when
+    the garbage collector noticed. Teardown belongs here, where it
+    cannot be forgotten; kill() is a no-op for jobs that already exited.
+    """
+    manager = JobManager()
+    yield manager
+    for job in manager.all():
+        # Only real children. TestValidation injects stub processes that
+        # never spawned anything and carry no pid -- handing one to
+        # kill() would either blow up or, worse, aim _killpg at whatever
+        # process group a made-up number happens to name.
+        if isinstance(job.process, subprocess.Popen):
+            manager.kill(job)
 
 
 def wait_until(predicate, timeout: float = 5.0) -> bool:

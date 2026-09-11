@@ -52,6 +52,10 @@ restarted harness writing the same path can't clobber evidence.
   live at the END of logs; head-tail would waste half the window on a
   banner from hour one.
 - `process.poll()` is the whole zombie story: calling it reaps.
+- The log file is the other half, and it is easy to miss: the handle
+  passed as `stdout=` has to be closed by US once `Popen` returns. The
+  child inherits its own dup, so the parent's copy does nothing but
+  occupy a descriptor — one per job, for the whole session.
 
 ## What the tests pin
 

@@ -127,7 +127,14 @@ so server-supplied metadata just works:
   are counted, not decoded.
 * Lifecycle: `close()` = stdin EOF (polite) → SIGTERM → SIGKILL, no
   zombies. This is our sync-world answer to the book's
-  `AsyncExitStack`.
+  `AsyncExitStack`. Two details earn the "no zombies": a `wait()` after
+  the SIGKILL (the signal cannot be caught, but the child still has to
+  be collected — kill without wait is exactly how you make the thing
+  you were trying to avoid), and closing `proc.stdout` at the end.
+  Killing a child does NOT close the read end of a pipe WE opened, so
+  without that last step every server costs one descriptor for the life
+  of the harness. Both were missing until `ResourceWarning` was
+  promoted to an error in the test config and said so.
 
 Live finding worth keeping: the CLI's `confirm_gate` prompts for
 EVERYTHING — the `readOnlyHint` matters to the `allow_read_only` gate,
